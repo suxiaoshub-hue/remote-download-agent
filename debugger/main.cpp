@@ -708,7 +708,10 @@ int wmain(int argc, wchar_t** argv) {
         Log log(output);
         log.write("PcstoryDebugger v0.1 Windows x64; buffers limited to 256 bytes; observational capture only");
         try {
-            if (!pid) pid = findPcstory(waitForProcess ? seconds : 0);
+            if (!pid) {
+                if (waitForProcess) std::puts("正在等待 pcstory.exe，请现在启动或重启 PCStory...");
+                pid = findPcstory(waitForProcess ? seconds : 0);
+            }
             HANDLE privilegeToken = nullptr;
             if (OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &privilegeToken)) {
                 TOKEN_PRIVILEGES privileges{};
