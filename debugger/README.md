@@ -10,6 +10,14 @@ PcstoryDebugger.exe --pid 9888 --seconds 90 --output capture.txt
 
 The PID is an example. Only x64 targets are supported. Existing debuggers and occupied hardware breakpoint slots are rejected. Debug registers are saved per thread and restored before detach. `DebugSetProcessKillOnExit(FALSE)` prevents debugger exit from terminating the target; use Ctrl+C for orderly cleanup rather than force termination. Captures can slow the target, and logs may contain outgoing application data.
 
+For network endpoint and protocol discovery, start the tool before PCStory:
+
+```
+PcstoryDebugger.exe --network --wait --seconds 90
+```
+
+This mode uses the four hardware breakpoints for `connect`, `send`, `recv`, and `WSARecv`. It records numeric endpoints and outgoing bytes. Receive calls are captured at entry, so their buffer contents are not response data until a return breakpoint is added.
+
 Build with MSVC and CMake:
 
 ```

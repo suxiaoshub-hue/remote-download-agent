@@ -1,3 +1,5 @@
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #include <tlhelp32.h>
 #include <algorithm>
@@ -89,6 +91,7 @@ class Capture {
     bool eventPending = false;
     bool continuationKnown = false;
     DWORD pendingStatus = DBG_CONTINUE;
+    bool networkMode = false;
     DEBUG_EVENT pendingEvent{};
 #ifdef PCSTORY_TEST_FAULTS
     bool restoreFault = true;
@@ -194,8 +197,9 @@ class Capture {
             for (auto& item : threads) arm(item.second);
         }
         if (!ready && std::all_of(apis.begin(), apis.end(), [](const Api& api) { return api.address != 0; })) {
-            log.write("CAPTURE_READY APIs=4");
-            std::puts("已开始捕获。请在 PCStory 中操作一次下载；Ctrl+C 可提前结束。");
+            log.write(std::string("CAPTURE_READY APIs=4 mode=") + (networkMode ? "network" : "ui"));
+            std::puts(networkMode ? "已开始网络捕获。请启动或操作 PCStory；Ctrl+C 可提前结束。" :
+                                   "已开始捕获。请在 PCStory 中操作一次下载；Ctrl+C 可提前结束。");
             ready = true;
         }
     }
@@ -263,6 +267,18 @@ class Capture {
         return hex(address);
     }
 
+    std::string socketAddress(ULONG64 address, ULONG64 length) const {
+        sockaddr_storage storage{};
+        const size_t amount = static_cast<size_t>(std::min<ULONG64>(length, sizeof(storage)));
+        if (!amount || !read(address, &storage, amount)) return "unreadable=true";
+        char host[INET6_ADDRSTRLEN]{};
+        char service[NI_MAXSERV]{};
+        if (getnameinfo(reinterpret_cast<const sockaddr*>(&storage), static_cast<socklen_t>(amount),
+                        host, sizeof(host), service, sizeof(service), NI_NUMERICHOST | NI_NUMERICSERV) != 0)
+            return "family=" + std::to_string(storage.ss_family) + " unreadable=true";
+        return std::string("addr=") + host + ":" + service;
+    }
+
     void record(size_t index, DWORD threadId, const CONTEXT& context) {
 #ifdef PCSTORY_TEST_FAULTS
         throw std::runtime_error("Injected API capture failure");
@@ -276,7 +292,26 @@ class Capture {
         read(context.Rsp, &returnAddress, sizeof(returnAddress));
         std::string line = std::string("API=") + api.name + " tid=" + std::to_string(threadId) +
             " caller=" + caller(returnAddress);
-        if (index < 2) {
+        if (networkMode) {
+            if (index == 0) {
+                line += " socket=" + hex(context.Rcx) + " sockaddr=" + hex(context.Rdx) +
+                    " addrlen=" + std::to_string(DWORD(context.R8)) + " " +
+                    socketAddress(context.Rdx, context.R8);
+            } else if (index == 1) {
+                const int length = static_cast<int>(context.R8);
+                line += " socket=" + hex(context.Rcx) + " len=" + std::to_string(length) +
+                    " flags=" + hex(DWORD(context.R9));
+                if (length > 0) line += buffer(context.Rdx, static_cast<ULONG64>(length));
+            } else if (index == 2) {
+                line += " socket=" + hex(context.Rcx) + " buffer=" + hex(context.Rdx) +
+                    " requested=" + std::to_string(DWORD(context.R8)) + " flags=" + hex(DWORD(context.R9)) +
+                    " entry_buffer_not_return_data=true";
+            } else {
+                line += " socket=" + hex(context.Rcx) + " buffers=" + hex(context.Rdx) +
+                    " bufferCount=" + std::to_string(DWORD(context.R8)) +
+                    " entry_buffer_not_return_data=true";
+            }
+        } else if (index < 2) {
             line += " hwnd=" + hex(context.Rcx) + " msg=" + hex(DWORD(context.Rdx)) +
                 " wparam=" + hex(context.R8) + " lparam=" + hex(context.R9);
             if (DWORD(context.Rdx) == WM_COPYDATA) {
@@ -478,7 +513,11 @@ class Capture {
     }
 
 public:
-    Capture(DWORD target, Log& output) : pid(target), log(output) {
+    Capture(DWORD target, Log& output, bool network) : pid(target), log(output), networkMode(network) {
+        if (networkMode) {
+            apis = {{{L"ws2_32.dll", "connect"}, {L"ws2_32.dll", "send"},
+                     {L"ws2_32.dll", "recv"}, {L"ws2_32.dll", "WSARecv"}}};
+        }
         process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | SYNCHRONIZE, FALSE, pid);
         if (!process) throw winError("Open PCStory (try running as administrator)");
     }
@@ -600,21 +639,26 @@ public:
     }
 };
 
-DWORD findPcstory() {
-    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snapshot == INVALID_HANDLE_VALUE) throw winError("List running processes");
-    std::vector<DWORD> matches;
-    PROCESSENTRY32W entry{};
-    entry.dwSize = sizeof(entry);
-    if (Process32FirstW(snapshot, &entry)) {
-        do {
-            if (_wcsicmp(entry.szExeFile, L"pcstory.exe") == 0) matches.push_back(entry.th32ProcessID);
-        } while (Process32NextW(snapshot, &entry));
+DWORD findPcstory(DWORD waitSeconds) {
+    const ULONGLONG deadline = GetTickCount64() + static_cast<ULONGLONG>(waitSeconds) * 1000;
+    for (;;) {
+        HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (snapshot == INVALID_HANDLE_VALUE) throw winError("List running processes");
+        std::vector<DWORD> matches;
+        PROCESSENTRY32W entry{};
+        entry.dwSize = sizeof(entry);
+        if (Process32FirstW(snapshot, &entry)) {
+            do {
+                if (_wcsicmp(entry.szExeFile, L"pcstory.exe") == 0) matches.push_back(entry.th32ProcessID);
+            } while (Process32NextW(snapshot, &entry));
+        }
+        CloseHandle(snapshot);
+        if (matches.size() == 1) return matches.front();
+        if (matches.size() > 1) throw std::runtime_error("Multiple PCStory processes found; use --pid with the intended process ID");
+        if (!waitSeconds || GetTickCount64() >= deadline)
+            throw std::runtime_error("pcstory.exe is not running; start PCStory first, or use --wait");
+        Sleep(250);
     }
-    CloseHandle(snapshot);
-    if (matches.empty()) throw std::runtime_error("pcstory.exe is not running; start PCStory first");
-    if (matches.size() != 1) throw std::runtime_error("Multiple PCStory processes found; use --pid with the intended process ID");
-    return matches.front();
 }
 
 std::wstring defaultOutput() {
@@ -637,6 +681,8 @@ int wmain(int argc, wchar_t** argv) {
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCtrlHandler(consoleHandler, TRUE);
     bool pause = true;
+    bool network = false;
+    bool waitForProcess = false;
     for (int index = 1; index < argc; ++index) if (std::wstring(argv[index]) == L"--no-pause") pause = false;
     int result = 0;
     std::wstring output;
@@ -647,8 +693,10 @@ int wmain(int argc, wchar_t** argv) {
         for (int index = 1; index < argc; ++index) {
             const std::wstring argument(argv[index]);
             if (argument == L"--no-pause") continue;
+            if (argument == L"--network") { network = true; continue; }
+            if (argument == L"--wait") { waitForProcess = true; continue; }
             if (argument == L"--help") {
-                std::puts("PcstoryDebugger.exe [--pid ID] [--seconds 5..600] [--output TXT] [--no-pause]");
+                std::puts("PcstoryDebugger.exe [--network] [--wait] [--pid ID] [--seconds 5..600] [--output TXT] [--no-pause]");
                 return 0;
             }
             if (index + 1 >= argc) throw std::runtime_error("Missing argument value");
@@ -660,7 +708,7 @@ int wmain(int argc, wchar_t** argv) {
         Log log(output);
         log.write("PcstoryDebugger v0.1 Windows x64; buffers limited to 256 bytes; observational capture only");
         try {
-            if (!pid) pid = findPcstory();
+            if (!pid) pid = findPcstory(waitForProcess ? seconds : 0);
             HANDLE privilegeToken = nullptr;
             if (OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &privilegeToken)) {
                 TOKEN_PRIVILEGES privileges{};
@@ -671,7 +719,9 @@ int wmain(int argc, wchar_t** argv) {
                 }
                 CloseHandle(privilegeToken);
             }
-            Capture capture(pid, log);
+            log.write(std::string("MODE=") + (network ? "network" : "ui") +
+                (waitForProcess ? " wait=true" : " wait=false"));
+            Capture capture(pid, log, network);
             capture.run(seconds);
         } catch (const std::exception& error) {
             log.write(std::string("ERROR ") + error.what());

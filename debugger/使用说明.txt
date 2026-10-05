@@ -9,7 +9,7 @@ PCStory API 记录工具 v0.1（Windows 64 位）
 5. 回到工具窗口，按 Ctrl+C 结束；或等待 90 秒自动结束。
 6. 同一文件夹中会生成 pcstory-debug.txt。把这个 TXT 发回来。
 
-工具会记录 SendMessageW、PostMessageW、send、WSASend 的调用参数、调用方和最多 256 字节的数据。
+普通模式会记录 SendMessageW、PostMessageW、send、WSASend 的调用参数、调用方和最多 256 字节的数据。
 这一步用于查明 PCStory 实际使用的消息格式，不会自动下发游戏下载。
 窗口消息每个 API 最多记录 5000 次，网络 API 各最多记录 10000 次。
 日志包含程序发出的数据，请只发送用于这次测试的日志。
@@ -23,3 +23,12 @@ PID 要使用任务管理器里当前的数值，9888 仅为示例。
 硬件断点可能降低运行速度。工具会恢复断点并脱离调试，让目标继续运行。
 Windows 7 兼容性尚未在 Windows 7 实机验证；32 位 PCStory 暂不支持。
 日志出现“没有 API 调用”时，不代表 PCStory 没下载，请检查目标 PID 和操作时机。
+
+网络专用模式（用于确认 12001/13001 等端口）：
+1. 以管理员身份打开 CMD，进入 EXE 所在文件夹。
+2. 运行：PcstoryDebugger.exe --network --wait --seconds 90
+3. 工具显示“已开始网络捕获”后，启动或重启 PCStory，并操作一次下载。
+4. 按 Ctrl+C 结束，把 pcstory-debug.txt 发回。
+
+网络模式记录 connect、send、recv、WSARecv；会显示目标 IP/端口、socket、发送数据和接收缓冲区地址。
+recv/WSARecv 在函数入口捕获，因此日志中的接收缓冲区只代表“准备接收”，不代表函数返回后的实际回复内容。
