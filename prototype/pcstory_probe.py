@@ -1,4 +1,5 @@
 import ctypes
+import os
 from ctypes import wintypes
 
 user32 = ctypes.windll.user32
@@ -28,9 +29,14 @@ def main():
             rows.append((hwnd, pid.value, cls.value, title.value, process_path(pid.value)))
         return True
     user32.EnumWindows(EnumWindowsProc(callback), 0)
-    print('HWND\tPID\tCLASS\tTITLE\tPROCESS')
+    lines = ['HWND\tPID\tCLASS\tTITLE\tPROCESS']
     for hwnd, pid, cls, title, path in rows:
-        print(f'{hwnd}\t{pid}\t{cls}\t{title}\t{path}')
+        lines.append(f'{hwnd}\t{pid}\t{cls}\t{title}\t{path}')
+    report = os.path.join(os.getcwd(), 'pcstory-windows.txt')
+    with open(report, 'w', encoding='utf-8') as file:
+        file.write('\n'.join(lines) + '\n')
+    print('\n'.join(lines))
+    print(f'\n报告已保存：{report}')
     input('\n记录完成，按回车退出...')
 
 if __name__ == '__main__':
