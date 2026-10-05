@@ -6,7 +6,9 @@ parser.add_argument("--config", default="agent-config.json")
 args = parser.parse_args()
 with open(args.config, encoding="utf-8") as file:
     config = json.load(file)
-command = [sys.executable, os.path.join(os.path.dirname(__file__), "agent.py"), "--cafe-id", config["cafeId"], "--name", config["name"], "--server", config["server"]]
+sys.path.insert(0, os.path.dirname(__file__))
+import agent
+sys.argv = ["Agent.exe", "--cafe-id", config["cafeId"], "--name", config["name"], "--server", config["server"]]
 if config.get("pcstoryCommand"):
-    command.extend(["--pcstory-command", config["pcstoryCommand"]])
-os.execv(command[0], command)
+    sys.argv.extend(["--pcstory-command", config["pcstoryCommand"]])
+agent.main()
