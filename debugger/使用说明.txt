@@ -1,0 +1,25 @@
+PCStory API 记录工具 v0.1（Windows 64 位）
+
+不需要安装 Python，不需要服务器。
+
+1. 解压整个 ZIP 到可写文件夹。
+2. 启动 PCStory。先关闭或脱离 x64dbg，不能同时使用两个调试器。
+3. 右键 PcstoryDebugger.exe，选择“以管理员身份运行”。
+4. 看到“已开始捕获”后，在 PCStory 里对一个游戏操作一次下载，等待几秒。
+5. 回到工具窗口，按 Ctrl+C 结束；或等待 90 秒自动结束。
+6. 同一文件夹中会生成 pcstory-debug.txt。把这个 TXT 发回来。
+
+工具会记录 SendMessageW、PostMessageW、send、WSASend 的调用参数、调用方和最多 256 字节的数据。
+这一步用于查明 PCStory 实际使用的消息格式，不会自动下发游戏下载。
+窗口消息每个 API 最多记录 5000 次，网络 API 各最多记录 10000 次。
+日志包含程序发出的数据，请只发送用于这次测试的日志。
+
+如果没有找到 pcstory.exe，请先打开 PCStory。
+如果有多个 PCStory 进程，可在 CMD 中指定 PID：
+PcstoryDebugger.exe --pid 9888 --seconds 90
+PID 要使用任务管理器里当前的数值，9888 仅为示例。
+
+退出时按 Ctrl+C，等待“捕获结束”提示；不要强制结束调试器或直接关闭窗口。
+硬件断点可能降低运行速度。工具会恢复断点并脱离调试，让目标继续运行。
+Windows 7 兼容性尚未在 Windows 7 实机验证；32 位 PCStory 暂不支持。
+日志出现“没有 API 调用”时，不代表 PCStory 没下载，请检查目标 PID 和操作时机。
