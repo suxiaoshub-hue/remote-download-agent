@@ -274,13 +274,13 @@ class Capture {
         char host[INET6_ADDRSTRLEN]{};
         if (storage.ss_family == AF_INET && amount >= sizeof(sockaddr_in)) {
             const auto* ipv4 = reinterpret_cast<const sockaddr_in*>(&storage);
-            if (!inet_ntopA(AF_INET, &ipv4->sin_addr, host, sizeof(host)))
+            if (!InetNtopA(AF_INET, &ipv4->sin_addr, host, sizeof(host)))
                 return "family=2 format_error=" + std::to_string(WSAGetLastError());
             return std::string("addr=") + host + ":" + std::to_string(ntohs(ipv4->sin_port));
         }
         if (storage.ss_family == AF_INET6 && amount >= sizeof(sockaddr_in6)) {
             const auto* ipv6 = reinterpret_cast<const sockaddr_in6*>(&storage);
-            if (!inet_ntopA(AF_INET6, &ipv6->sin6_addr, host, sizeof(host)))
+            if (!InetNtopA(AF_INET6, &ipv6->sin6_addr, host, sizeof(host)))
                 return "family=23 format_error=" + std::to_string(WSAGetLastError());
             return std::string("addr=[") + host + "]:" + std::to_string(ntohs(ipv6->sin6_port));
         }
