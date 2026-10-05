@@ -403,7 +403,10 @@ class Capture {
                 pendingStatus = DBG_CONTINUE;
             if (exception.ExceptionCode == EXCEPTION_SINGLE_STEP) {
                 auto found = threads.find(pendingEvent.dwThreadId);
-                if (found == threads.end()) return false;
+                if (found == threads.end()) {
+                    continuationKnown = true;
+                    return true;
+                }
                 CONTEXT context{};
                 context.ContextFlags = CONTEXT_DEBUG_REGISTERS;
                 if (!GetThreadContext(found->second.handle, &context)) return false;
@@ -443,10 +446,33 @@ class Capture {
                     CloseHandle(event.u.CreateProcessInfo.hFile);
             }
             if (!continuationKnown && !classifyPending()) return false;
+            if (event.dwDebugEventCode == EXCEPTION_DEBUG_EVENT &&
+                event.u.Exception.ExceptionRecord.ExceptionCode == EXCEPTION_SINGLE_STEP && pendingStatus == DBG_CONTINUE) {
+                auto found = threads.find(event.dwThreadId);
+                if (found != threads.end() && !found->second.suspended) {
+                    CONTEXT context{};
+                    context.ContextFlags = CONTEXT_CONTROL | CONTEXT_DEBUG_REGISTERS;
+                    if (!GetThreadContext(found->second.handle, &context)) return false;
+                    context.EFlags |= 0x10000;
+                    context.Dr6 &= ~0xfULL;
+                    if (!SetThreadContext(found->second.handle, &context)) return false;
+                }
+            }
             if (!ContinueDebugEvent(event.dwProcessId, event.dwThreadId, pendingStatus)) {
                 log.write("DRAIN_ERROR action=continue error=" + std::to_string(GetLastError()));
                 return false;
             }
+            if (event.dwDebugEventCode == EXIT_THREAD_DEBUG_EVENT) {
+                auto found = threads.find(event.dwThreadId);
+                if (found != threads.end()) {
+                    CloseHandle(found->second.handle);
+                    threads.erase(found);
+                }
+            }
+            if (event.dwDebugEventCode == EXIT_PROCESS_DEBUG_EVENT) exited = true;
+            if (event.dwDebugEventCode == EXCEPTION_DEBUG_EVENT &&
+                event.u.Exception.ExceptionRecord.ExceptionCode == EXCEPTION_BREAKPOINT && pendingStatus == DBG_CONTINUE)
+                initialBreakpoint = true;
             eventPending = false;
         }
     }
@@ -525,7 +551,7 @@ public:
                     log.write("RESTORE_ERROR tid=" + std::to_string(item.first) + " action=suspend error=" + std::to_string(GetLastError()));
                 } else thread.suspended = true;
             }
-            if (!restored || !drainPending()) return false;
+            if (!drainPending() || !restored) return false;
             for (auto& item : threads) {
                 auto& thread = item.second;
                 if (!thread.suspended) continue;
