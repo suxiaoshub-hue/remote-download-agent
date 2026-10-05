@@ -81,6 +81,8 @@ class Capture {
     HANDLE process = nullptr;
     Log& log;
     bool attached = false;
+    bool hadAttached = false;
+    bool detachReported = false;
     bool exited = false;
     bool initialBreakpoint = false;
     bool ready = false;
@@ -363,6 +365,30 @@ class Capture {
         return DBG_CONTINUE;
     }
 
+    bool resumeSuspended() {
+        bool resumed = true;
+        for (auto& item : threads) {
+            auto& thread = item.second;
+            if (!thread.suspended) continue;
+            if (WaitForSingleObject(thread.handle, 0) == WAIT_OBJECT_0) {
+                thread.suspended = false;
+                continue;
+            }
+            if (ResumeThread(thread.handle) == DWORD(-1)) {
+                log.write("RESTORE_ERROR tid=" + std::to_string(item.first) + " action=resume error=" + std::to_string(GetLastError()));
+                resumed = false;
+            } else thread.suspended = false;
+        }
+        return resumed;
+    }
+
+    void reportDetach() {
+        if (hadAttached && !detachReported) {
+            log.write("DETACHED restored=true");
+            detachReported = true;
+        }
+    }
+
 public:
     Capture(DWORD target, Log& output) : pid(target), log(output) {
         process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | SYNCHRONIZE, FALSE, pid);
@@ -391,6 +417,7 @@ public:
         if (debugged) throw std::runtime_error("Target already has a debugger; detach x64dbg before running this tool");
         if (!DebugActiveProcess(pid)) throw winError("Attach debugger (try running as administrator)");
         attached = true;
+        hadAttached = true;
         if (!DebugSetProcessKillOnExit(FALSE)) throw winError("Disable target termination on debugger exit");
         log.write("ATTACHED pid=" + std::to_string(pid) + " seconds=" + std::to_string(seconds) + " killOnExit=false");
         const ULONGLONG deadline = GetTickCount64() + static_cast<ULONGLONG>(seconds) * 1000;
@@ -417,7 +444,11 @@ public:
     }
 
     bool finish() {
-        if (!attached) return true;
+        if (!attached) {
+            if (!resumeSuspended()) return false;
+            reportDetach();
+            return true;
+        }
         bool restored = true;
         if (!exited && WaitForSingleObject(process, 0) != WAIT_OBJECT_0) {
             for (auto& item : threads) {
@@ -431,6 +462,10 @@ public:
             for (auto& item : threads) {
                 auto& thread = item.second;
                 if (!thread.suspended) continue;
+                if (WaitForSingleObject(thread.handle, 0) == WAIT_OBJECT_0) {
+                    thread.suspended = false;
+                    continue;
+                }
 #ifdef PCSTORY_TEST_FAULTS
                 if (restoreFault) {
                     restoreFault = false;
@@ -489,27 +524,16 @@ public:
                 log.write("DETACH_ERROR error=" + std::to_string(GetLastError()));
                 return false;
             }
-            for (auto& item : threads) {
-                auto& thread = item.second;
-                if (thread.suspended) {
-                    if (ResumeThread(thread.handle) == DWORD(-1)) {
-                        if (WaitForSingleObject(thread.handle, 0) == WAIT_OBJECT_0) {
-                            thread.suspended = false;
-                            continue;
-                        }
-                        log.write("RESTORE_ERROR tid=" + std::to_string(item.first) + " action=resume error=" + std::to_string(GetLastError()));
-                        return false;
-                    }
-                    thread.suspended = false;
-                }
-            }
+            attached = false;
+            if (!resumeSuspended()) return false;
         } else if (eventPending) {
             ContinueDebugEvent(pendingEvent.dwProcessId, pendingEvent.dwThreadId, DBG_CONTINUE);
             eventPending = false;
         }
         attached = false;
-        log.write(std::string("DETACHED restored=") + (restored ? "true" : "false"));
-        return restored;
+        if (!resumeSuspended()) return false;
+        reportDetach();
+        return true;
     }
 };
 
