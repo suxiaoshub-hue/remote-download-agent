@@ -32,7 +32,15 @@ void produceCalls(HWND window, SOCKET connection) {
     WSASend(connection, &buffer, 1, &sent, 0, nullptr, nullptr);
 }
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc == 3 && std::string(argv[1]) == "--interrupt") {
+        FreeConsole();
+        if (!AttachConsole(static_cast<DWORD>(std::stoul(argv[2])))) return 6;
+        SetConsoleCtrlHandler(nullptr, TRUE);
+        BOOL sent = GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0);
+        FreeConsole();
+        return sent ? 0 : 7;
+    }
     WSADATA winsock{};
     if (WSAStartup(MAKEWORD(2, 2), &winsock)) return 1;
     SOCKET receiver = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -52,6 +60,21 @@ int main() {
     HWND window = CreateWindowW(windowClass.lpszClassName, L"Fixture", 0, 0, 0, 0, 0,
                                 nullptr, nullptr, windowClass.hInstance, nullptr);
     if (!window) return 4;
+    DWORD mainId = GetCurrentThreadId();
+    std::thread seedRegisters([mainId] {
+        HANDLE thread = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, mainId);
+        if (!thread) return;
+        if (SuspendThread(thread) == DWORD(-1)) { CloseHandle(thread); return; }
+        CONTEXT registers{};
+        registers.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+        if (GetThreadContext(thread, &registers)) {
+            registers.Dr0 = 0x12345678;
+            SetThreadContext(thread, &registers);
+        }
+        ResumeThread(thread);
+        CloseHandle(thread);
+    });
+    seedRegisters.join();
     marker("ready.txt");
     const ULONGLONG deadline = GetTickCount64() + 30000;
     bool produced = false;
@@ -84,7 +107,7 @@ int main() {
                 CloseHandle(thread);
                 BOOL debugged = TRUE;
                 CheckRemoteDebuggerPresent(GetCurrentProcess(), &debugged);
-                if (read && !debugged && registers.Dr0 == 0 && registers.Dr1 == 0 &&
+                if (read && !debugged && registers.Dr0 == 0x12345678 && registers.Dr1 == 0 &&
                     registers.Dr2 == 0 && registers.Dr3 == 0 && (registers.Dr7 & 0xff) == 0) {
                     marker("restored.txt");
                 }

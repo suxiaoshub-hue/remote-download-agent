@@ -7,6 +7,7 @@
 #include <iomanip>
 #include <map>
 #include <sstream>
+#include <share.h>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -45,7 +46,8 @@ class Log {
     ULONGLONG start = GetTickCount64();
 public:
     explicit Log(const std::wstring& path) {
-        if (_wfopen_s(&file, path.c_str(), L"wb") || !file) throw winError("Open output TXT");
+        file = _wfsopen(path.c_str(), L"wb", _SH_DENYWR);
+        if (!file) throw winError("Open output TXT");
         std::fputs("\xef\xbb\xbf", file);
     }
     ~Log() { if (file) std::fclose(file); }
@@ -82,6 +84,11 @@ class Capture {
     bool exited = false;
     bool initialBreakpoint = false;
     bool ready = false;
+    bool eventPending = false;
+    DEBUG_EVENT pendingEvent{};
+#ifdef PCSTORY_TEST_FAULTS
+    bool restoreFault = true;
+#endif
     std::map<DWORD, Thread> threads;
     std::vector<Module> modules;
     std::array<Api, 4> apis{{{L"user32.dll", "SendMessageW"}, {L"user32.dll", "PostMessageW"},
@@ -250,6 +257,9 @@ class Capture {
     }
 
     void record(size_t index, DWORD threadId, const CONTEXT& context) {
+#ifdef PCSTORY_TEST_FAULTS
+        throw std::runtime_error("Injected API capture failure");
+#endif
         auto& api = apis[index];
         ++api.calls;
         const size_t limit = index < 2 ? 5000 : 10000;
@@ -360,7 +370,14 @@ public:
     }
 
     ~Capture() {
-        finish();
+        bool warned = false;
+        while (!finish()) {
+            if (!warned) {
+                std::puts("正在重试恢复断点，请勿关闭窗口；恢复完成后会自动退出。");
+                warned = true;
+            }
+            Sleep(100);
+        }
         for (auto& item : threads) CloseHandle(item.second.handle);
         if (process) CloseHandle(process);
     }
@@ -383,15 +400,11 @@ public:
                 if (GetLastError() == ERROR_SEM_TIMEOUT) continue;
                 throw winError("Wait for debug event");
             }
-            DWORD status = DBG_CONTINUE;
-            try {
-                status = handleEvent(event);
-            } catch (...) {
-                ContinueDebugEvent(event.dwProcessId, event.dwThreadId,
-                    event.dwDebugEventCode == EXCEPTION_DEBUG_EVENT ? DBG_EXCEPTION_NOT_HANDLED : DBG_CONTINUE);
-                throw;
-            }
+            pendingEvent = event;
+            eventPending = true;
+            DWORD status = handleEvent(event);
             if (!ContinueDebugEvent(event.dwProcessId, event.dwThreadId, status)) throw winError("Continue target process");
+            eventPending = false;
         }
         log.write(InterlockedCompareExchange(&interrupted, 0, 0) ? "STOP reason=Ctrl+C" : "STOP reason=timeout_or_exit");
         if (!finish()) throw std::runtime_error("Could not fully restore/detach; see TXT for details");
@@ -409,7 +422,7 @@ public:
         if (!exited && WaitForSingleObject(process, 0) != WAIT_OBJECT_0) {
             for (auto& item : threads) {
                 auto& thread = item.second;
-                if (WaitForSingleObject(thread.handle, 0) == WAIT_OBJECT_0) continue;
+                if (WaitForSingleObject(thread.handle, 0) == WAIT_OBJECT_0 || thread.suspended) continue;
                 if (SuspendThread(thread.handle) == DWORD(-1)) {
                     restored = false;
                     log.write("RESTORE_ERROR tid=" + std::to_string(item.first) + " action=suspend error=" + std::to_string(GetLastError()));
@@ -418,25 +431,81 @@ public:
             for (auto& item : threads) {
                 auto& thread = item.second;
                 if (!thread.suspended) continue;
+#ifdef PCSTORY_TEST_FAULTS
+                if (restoreFault) {
+                    restoreFault = false;
+                    restored = false;
+                    log.write("RESTORE_RETRY injected=true");
+                    continue;
+                }
+#endif
                 if (!SetThreadContext(thread.handle, &thread.original)) {
                     restored = false;
                     log.write("RESTORE_ERROR tid=" + std::to_string(item.first) + " action=registers error=" + std::to_string(GetLastError()));
                 }
             }
+            if (!restored) return false;
+            for (;;) {
+                DEBUG_EVENT event{};
+                bool fromPending = eventPending;
+                if (fromPending) event = pendingEvent;
+                else if (!WaitForDebugEvent(&event, 0)) {
+                    if (GetLastError() != ERROR_SEM_TIMEOUT) {
+                        log.write("DRAIN_ERROR error=" + std::to_string(GetLastError()));
+                        return false;
+                    }
+                    break;
+                }
+                if (!fromPending) {
+                    pendingEvent = event;
+                    eventPending = true;
+                    if (event.dwDebugEventCode == LOAD_DLL_DEBUG_EVENT && event.u.LoadDll.hFile)
+                        CloseHandle(event.u.LoadDll.hFile);
+                    if (event.dwDebugEventCode == CREATE_PROCESS_DEBUG_EVENT && event.u.CreateProcessInfo.hFile)
+                        CloseHandle(event.u.CreateProcessInfo.hFile);
+                }
+                DWORD status = DBG_CONTINUE;
+                if (event.dwDebugEventCode == EXCEPTION_DEBUG_EVENT) {
+                    status = DBG_EXCEPTION_NOT_HANDLED;
+                    const auto& exception = event.u.Exception.ExceptionRecord;
+                    if (exception.ExceptionCode == EXCEPTION_BREAKPOINT && !initialBreakpoint) {
+                        initialBreakpoint = true;
+                        status = DBG_CONTINUE;
+                    }
+                    if (exception.ExceptionCode == EXCEPTION_SINGLE_STEP) {
+                        const auto address = reinterpret_cast<ULONG64>(exception.ExceptionAddress);
+                        for (const auto& api : apis) {
+                            if (api.address && api.address == address) status = DBG_CONTINUE;
+                        }
+                    }
+                }
+                if (!ContinueDebugEvent(event.dwProcessId, event.dwThreadId, status)) {
+                    log.write("DRAIN_ERROR action=continue error=" + std::to_string(GetLastError()));
+                    return false;
+                }
+                eventPending = false;
+            }
             if (!DebugActiveProcessStop(pid)) {
-                restored = false;
                 log.write("DETACH_ERROR error=" + std::to_string(GetLastError()));
+                return false;
             }
             for (auto& item : threads) {
                 auto& thread = item.second;
                 if (thread.suspended) {
                     if (ResumeThread(thread.handle) == DWORD(-1)) {
-                        restored = false;
+                        if (WaitForSingleObject(thread.handle, 0) == WAIT_OBJECT_0) {
+                            thread.suspended = false;
+                            continue;
+                        }
                         log.write("RESTORE_ERROR tid=" + std::to_string(item.first) + " action=resume error=" + std::to_string(GetLastError()));
+                        return false;
                     }
                     thread.suspended = false;
                 }
             }
+        } else if (eventPending) {
+            ContinueDebugEvent(pendingEvent.dwProcessId, pendingEvent.dwThreadId, DBG_CONTINUE);
+            eventPending = false;
         }
         attached = false;
         log.write(std::string("DETACHED restored=") + (restored ? "true" : "false"));

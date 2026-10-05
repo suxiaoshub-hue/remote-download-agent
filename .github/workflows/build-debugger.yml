@@ -17,6 +17,12 @@ jobs:
       - name: Verify capture and detach
         shell: pwsh
         run: ./debugger/tests/smoke.ps1 -Bin build/debugger/Release
+      - name: Verify Ctrl+C cleanup
+        shell: pwsh
+        run: ./debugger/tests/smoke.ps1 -Bin build/debugger/Release -Interrupt
+      - name: Verify capture and restoration failure recovery
+        shell: pwsh
+        run: ./debugger/tests/smoke.ps1 -Bin build/debugger/Release -Fault
       - name: Package
         shell: pwsh
         run: |
@@ -28,7 +34,10 @@ jobs:
         if: always()
         with:
           name: pcstory-debugger-diagnostics
-          path: ${{ runner.temp }}/pcstory-capture-smoke/*.txt
+          path: |
+            ${{ runner.temp }}/pcstory-capture-smoke/*.txt
+            ${{ runner.temp }}/pcstory-capture-interrupt/*.txt
+            ${{ runner.temp }}/pcstory-capture-fault/*.txt
       - uses: actions/upload-artifact@v4
         with:
           name: PcstoryDebugger-Windows-x64
