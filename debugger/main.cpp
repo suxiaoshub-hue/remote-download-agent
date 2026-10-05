@@ -421,6 +421,36 @@ class Capture {
         return true;
     }
 
+    bool drainPending() {
+        for (;;) {
+            DEBUG_EVENT event{};
+            bool fromPending = eventPending;
+            if (fromPending) event = pendingEvent;
+            else if (!WaitForDebugEvent(&event, 0)) {
+                if (GetLastError() != ERROR_SEM_TIMEOUT) {
+                    log.write("DRAIN_ERROR error=" + std::to_string(GetLastError()));
+                    return false;
+                }
+                return true;
+            }
+            if (!fromPending) {
+                pendingEvent = event;
+                eventPending = true;
+                continuationKnown = false;
+                if (event.dwDebugEventCode == LOAD_DLL_DEBUG_EVENT && event.u.LoadDll.hFile)
+                    CloseHandle(event.u.LoadDll.hFile);
+                if (event.dwDebugEventCode == CREATE_PROCESS_DEBUG_EVENT && event.u.CreateProcessInfo.hFile)
+                    CloseHandle(event.u.CreateProcessInfo.hFile);
+            }
+            if (!continuationKnown && !classifyPending()) return false;
+            if (!ContinueDebugEvent(event.dwProcessId, event.dwThreadId, pendingStatus)) {
+                log.write("DRAIN_ERROR action=continue error=" + std::to_string(GetLastError()));
+                return false;
+            }
+            eventPending = false;
+        }
+    }
+
 public:
     Capture(DWORD target, Log& output) : pid(target), log(output) {
         process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | SYNCHRONIZE, FALSE, pid);
@@ -495,6 +525,7 @@ public:
                     log.write("RESTORE_ERROR tid=" + std::to_string(item.first) + " action=suspend error=" + std::to_string(GetLastError()));
                 } else thread.suspended = true;
             }
+            if (!restored || !drainPending()) return false;
             for (auto& item : threads) {
                 auto& thread = item.second;
                 if (!thread.suspended) continue;
@@ -516,33 +547,6 @@ public:
                 }
             }
             if (!restored) return false;
-            for (;;) {
-                DEBUG_EVENT event{};
-                bool fromPending = eventPending;
-                if (fromPending) event = pendingEvent;
-                else if (!WaitForDebugEvent(&event, 0)) {
-                    if (GetLastError() != ERROR_SEM_TIMEOUT) {
-                        log.write("DRAIN_ERROR error=" + std::to_string(GetLastError()));
-                        return false;
-                    }
-                    break;
-                }
-                if (!fromPending) {
-                    pendingEvent = event;
-                    eventPending = true;
-                    continuationKnown = false;
-                    if (event.dwDebugEventCode == LOAD_DLL_DEBUG_EVENT && event.u.LoadDll.hFile)
-                        CloseHandle(event.u.LoadDll.hFile);
-                    if (event.dwDebugEventCode == CREATE_PROCESS_DEBUG_EVENT && event.u.CreateProcessInfo.hFile)
-                        CloseHandle(event.u.CreateProcessInfo.hFile);
-                }
-                if (!continuationKnown && !classifyPending()) return false;
-                if (!ContinueDebugEvent(event.dwProcessId, event.dwThreadId, pendingStatus)) {
-                    log.write("DRAIN_ERROR action=continue error=" + std::to_string(GetLastError()));
-                    return false;
-                }
-                eventPending = false;
-            }
             if (!DebugActiveProcessStop(pid)) {
                 log.write("DETACH_ERROR error=" + std::to_string(GetLastError()));
                 return false;
