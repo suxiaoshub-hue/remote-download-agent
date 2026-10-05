@@ -272,11 +272,19 @@ class Capture {
         const size_t amount = static_cast<size_t>(std::min<ULONG64>(length, sizeof(storage)));
         if (!amount || !read(address, &storage, amount)) return "unreadable=true";
         char host[INET6_ADDRSTRLEN]{};
-        char service[NI_MAXSERV]{};
-        if (getnameinfo(reinterpret_cast<const sockaddr*>(&storage), static_cast<socklen_t>(amount),
-                        host, sizeof(host), service, sizeof(service), NI_NUMERICHOST | NI_NUMERICSERV) != 0)
-            return "family=" + std::to_string(storage.ss_family) + " unreadable=true";
-        return std::string("addr=") + host + ":" + service;
+        if (storage.ss_family == AF_INET && amount >= sizeof(sockaddr_in)) {
+            const auto* ipv4 = reinterpret_cast<const sockaddr_in*>(&storage);
+            if (!inet_ntopA(AF_INET, &ipv4->sin_addr, host, sizeof(host)))
+                return "family=2 format_error=" + std::to_string(WSAGetLastError());
+            return std::string("addr=") + host + ":" + std::to_string(ntohs(ipv4->sin_port));
+        }
+        if (storage.ss_family == AF_INET6 && amount >= sizeof(sockaddr_in6)) {
+            const auto* ipv6 = reinterpret_cast<const sockaddr_in6*>(&storage);
+            if (!inet_ntopA(AF_INET6, &ipv6->sin6_addr, host, sizeof(host)))
+                return "family=23 format_error=" + std::to_string(WSAGetLastError());
+            return std::string("addr=[") + host + "]:" + std::to_string(ntohs(ipv6->sin6_port));
+        }
+        return "family=" + std::to_string(storage.ss_family) + " unsupported=true";
     }
 
     void record(size_t index, DWORD threadId, const CONTEXT& context) {
