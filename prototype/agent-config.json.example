@@ -1,0 +1,6 @@
+{
+  "cafeId": "cafe-001",
+  "name": "测试网吧",
+  "server": "https://your-server.example.com",
+  "pcstoryCommand": "PcstoryAdapter.exe --game-id {game_id} --force {force}"
+}
