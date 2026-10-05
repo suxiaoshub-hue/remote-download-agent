@@ -8,6 +8,8 @@ bool exists(const char* path) {
     return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
 }
 
+CONTEXT baseline{};
+
 void marker(const char* path) {
     std::ofstream(path) << "ok\n";
 }
@@ -70,6 +72,11 @@ int main(int argc, char** argv) {
         if (GetThreadContext(thread, &registers)) {
             registers.Dr0 = 0x12345678;
             SetThreadContext(thread, &registers);
+            baseline.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+            GetThreadContext(thread, &baseline);
+            std::ofstream report("baseline.txt");
+            report << std::hex << "dr0=" << baseline.Dr0 << " dr1=" << baseline.Dr1 << " dr2=" << baseline.Dr2
+                   << " dr3=" << baseline.Dr3 << " dr7=" << baseline.Dr7 << '\n';
         }
         ResumeThread(thread);
         CloseHandle(thread);
@@ -107,8 +114,13 @@ int main(int argc, char** argv) {
                 CloseHandle(thread);
                 BOOL debugged = TRUE;
                 CheckRemoteDebuggerPresent(GetCurrentProcess(), &debugged);
-                if (read && !debugged && registers.Dr0 == 0x12345678 && registers.Dr1 == 0 &&
-                    registers.Dr2 == 0 && registers.Dr3 == 0 && (registers.Dr7 & 0xff) == 0) {
+                std::ofstream report("register-check.txt");
+                report << "read=" << read << " debugged=" << debugged << std::hex
+                       << " dr0=" << registers.Dr0 << " dr1=" << registers.Dr1 << " dr2=" << registers.Dr2
+                       << " dr3=" << registers.Dr3 << " dr7=" << registers.Dr7 << '\n';
+                report.close();
+                if (read && !debugged && registers.Dr0 == baseline.Dr0 && registers.Dr1 == baseline.Dr1 &&
+                    registers.Dr2 == baseline.Dr2 && registers.Dr3 == baseline.Dr3 && registers.Dr7 == baseline.Dr7) {
                     marker("restored.txt");
                 }
             });

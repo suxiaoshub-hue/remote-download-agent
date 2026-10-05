@@ -87,6 +87,8 @@ class Capture {
     bool initialBreakpoint = false;
     bool ready = false;
     bool eventPending = false;
+    bool continuationKnown = false;
+    DWORD pendingStatus = DBG_CONTINUE;
     DEBUG_EVENT pendingEvent{};
 #ifdef PCSTORY_TEST_FAULTS
     bool restoreFault = true;
@@ -231,6 +233,9 @@ class Capture {
             throw std::runtime_error("Target has occupied hardware breakpoint slots; detach the other debugger first");
         }
         auto inserted = threads.emplace(id, Thread{handle, original});
+        log.write("THREAD_SAVED tid=" + std::to_string(id) + " dr0=" + hex(original.Dr0) +
+            " dr1=" + hex(original.Dr1) + " dr2=" + hex(original.Dr2) + " dr3=" + hex(original.Dr3) +
+            " dr7=" + hex(original.Dr7));
         arm(inserted.first->second);
     }
 
@@ -389,6 +394,33 @@ class Capture {
         }
     }
 
+    bool classifyPending() {
+        pendingStatus = DBG_CONTINUE;
+        if (pendingEvent.dwDebugEventCode == EXCEPTION_DEBUG_EVENT) {
+            pendingStatus = DBG_EXCEPTION_NOT_HANDLED;
+            const auto& exception = pendingEvent.u.Exception.ExceptionRecord;
+            if (exception.ExceptionCode == EXCEPTION_BREAKPOINT && !initialBreakpoint)
+                pendingStatus = DBG_CONTINUE;
+            if (exception.ExceptionCode == EXCEPTION_SINGLE_STEP) {
+                auto found = threads.find(pendingEvent.dwThreadId);
+                if (found == threads.end()) return false;
+                CONTEXT context{};
+                context.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+                if (!GetThreadContext(found->second.handle, &context)) return false;
+                const ULONG64 address = reinterpret_cast<ULONG64>(exception.ExceptionAddress);
+                ULONG64 owned = 0;
+                const ULONG64 registers[] = {context.Dr0, context.Dr1, context.Dr2, context.Dr3};
+                for (size_t index = 0; index < apis.size(); ++index) {
+                    if ((context.Dr6 & (1ULL << index)) && apis[index].address == address && registers[index] == address)
+                        owned |= 1ULL << index;
+                }
+                if (owned && !(context.Dr6 & 0xe00f & ~owned)) pendingStatus = DBG_CONTINUE;
+            }
+        }
+        continuationKnown = true;
+        return true;
+    }
+
 public:
     Capture(DWORD target, Log& output) : pid(target), log(output) {
         process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | SYNCHRONIZE, FALSE, pid);
@@ -429,7 +461,10 @@ public:
             }
             pendingEvent = event;
             eventPending = true;
+            continuationKnown = false;
+            if (!classifyPending()) throw winError("Classify debug exception ownership");
             DWORD status = handleEvent(event);
+            pendingStatus = status;
             if (!ContinueDebugEvent(event.dwProcessId, event.dwThreadId, status)) throw winError("Continue target process");
             eventPending = false;
         }
@@ -449,6 +484,7 @@ public:
             reportDetach();
             return true;
         }
+        if (eventPending && !continuationKnown && !classifyPending()) return false;
         bool restored = true;
         if (!exited && WaitForSingleObject(process, 0) != WAIT_OBJECT_0) {
             for (auto& item : threads) {
@@ -494,27 +530,14 @@ public:
                 if (!fromPending) {
                     pendingEvent = event;
                     eventPending = true;
+                    continuationKnown = false;
                     if (event.dwDebugEventCode == LOAD_DLL_DEBUG_EVENT && event.u.LoadDll.hFile)
                         CloseHandle(event.u.LoadDll.hFile);
                     if (event.dwDebugEventCode == CREATE_PROCESS_DEBUG_EVENT && event.u.CreateProcessInfo.hFile)
                         CloseHandle(event.u.CreateProcessInfo.hFile);
                 }
-                DWORD status = DBG_CONTINUE;
-                if (event.dwDebugEventCode == EXCEPTION_DEBUG_EVENT) {
-                    status = DBG_EXCEPTION_NOT_HANDLED;
-                    const auto& exception = event.u.Exception.ExceptionRecord;
-                    if (exception.ExceptionCode == EXCEPTION_BREAKPOINT && !initialBreakpoint) {
-                        initialBreakpoint = true;
-                        status = DBG_CONTINUE;
-                    }
-                    if (exception.ExceptionCode == EXCEPTION_SINGLE_STEP) {
-                        const auto address = reinterpret_cast<ULONG64>(exception.ExceptionAddress);
-                        for (const auto& api : apis) {
-                            if (api.address && api.address == address) status = DBG_CONTINUE;
-                        }
-                    }
-                }
-                if (!ContinueDebugEvent(event.dwProcessId, event.dwThreadId, status)) {
+                if (!continuationKnown && !classifyPending()) return false;
+                if (!ContinueDebugEvent(event.dwProcessId, event.dwThreadId, pendingStatus)) {
                     log.write("DRAIN_ERROR action=continue error=" + std::to_string(GetLastError()));
                     return false;
                 }
@@ -525,6 +548,16 @@ public:
                 return false;
             }
             attached = false;
+            for (const auto& item : threads) {
+                if (!item.second.suspended) continue;
+                CONTEXT context{};
+                context.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+                if (GetThreadContext(item.second.handle, &context)) {
+                    log.write("THREAD_AFTER_DETACH tid=" + std::to_string(item.first) + " dr0=" + hex(context.Dr0) +
+                        " dr1=" + hex(context.Dr1) + " dr2=" + hex(context.Dr2) + " dr3=" + hex(context.Dr3) +
+                        " dr7=" + hex(context.Dr7));
+                }
+            }
             if (!resumeSuspended()) return false;
         } else if (eventPending) {
             ContinueDebugEvent(pendingEvent.dwProcessId, pendingEvent.dwThreadId, DBG_CONTINUE);
