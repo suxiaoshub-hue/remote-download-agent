@@ -1,23 +1,32 @@
 # PCStory 适配器接入说明
 
-现有精灵组件已经把下载器统一成任务模型。静态分析确认的关键入口包括：
+当前优先验证 `adapter/` 中的本地 GID 下载命令。已从用户提供的
+PCStory 6.4.2.0 文件确认，主窗口消息 `0x468` 转发给下载页，最终调用
+添加下载任务函数。测试版校验二进制 SHA256，默认不强制更新，
+通过新追加的 PCStory 日志区分新增成功和开始下载。
 
-- `batch-download-game`
-- `DownloadGamePartialAsync`
-- `StartTasksDownload`
-- `ViewerGetDownloadingList`
-- `CleanPcstoryAsync`
-- `CenterToCafe_Download_SYN_Forward`
-- `CafeToCenter_Download_ACK`
+精灵的蘑菇分支使用列表控件消息和下载对话框控件消息。这能证明它通过
+程序控制 PCStory，但那些 .NET 方法名称不等于 PCStory 的公开命令行 API。
+尚未发现受支持的 `pcstory.exe --download` 参数。
 
-网页服务只负责发送任务，Windows Agent 负责把任务转换为本机适配器调用：
+本地真实下载验证通过后，网页服务发送任务，Windows Agent 调用：
 
 ```text
-{ gameId, forceUpdate, disk, downloader }
+{ gameId }
         ↓
-PcstoryAdapter
+PcstoryAdapter.exe --game-id 5131
         ↓
-GDP_Agent_Ext / PCStory 本地调用
+已运行的 PCStory 主窗口消息 0x468
+        ↓
+PCStory 新增下载任务，使用它已有的磁盘配置
 ```
 
-暂不向 `9927`、`12001` 或 `13001` 直接发送未知二进制数据。真实适配器应优先复用 GDP_Agent_Ext 已有调用链，并通过日志或状态接口确认结果。
+此路径无需登录 GDP_Agent_Ext。端口 9927、12001、13001 与本次命令无关。
+
+退出码 0 表示新日志出现该 GID 的 `start download`，不表示下载完成；
+2 表示仅新增成功；3 表示新增失败；4、5 表示尚未确认，不能自动重发。
+测试机仍需要确认下载列表、实际下载速度与文件增长。
+
+`prototype/agent.py` 的默认行为仍是模拟进度；即使配置了外部命令，它也
+没有读取真实 PCStory 下载进度。不能以原型网页的进度作为真实下载证据。
+接入时必须替换模拟状态，并分别处理以上退出码。

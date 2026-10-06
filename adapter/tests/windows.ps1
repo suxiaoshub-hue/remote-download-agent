@@ -34,3 +34,4 @@ foreach ($mode in @('started', 'accepted', 'failed', 'quiet', 'wrong-gid', 'time
         if (!$fixture.HasExited) { Stop-Process -Id $fixture.Id }
     }
 }
+$global:LASTEXITCODE = 0
