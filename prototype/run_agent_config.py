@@ -6,6 +6,7 @@ import time
 from urllib.parse import urlparse
 
 import agent
+from runtime import configure_console
 
 
 class OutputLog:
@@ -56,6 +57,7 @@ def lock_instance(file):
 
 
 def main():
+    configure_console()
     base = os.path.dirname(sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(__file__))
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', default=os.path.join(base, 'agent-config.json'))

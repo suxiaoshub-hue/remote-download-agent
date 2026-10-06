@@ -61,7 +61,7 @@ def main():
             print('PASS frozen Server webpage, auth, config, Agent heartbeat, inventory errors and local log')
         finally:
             for process in (agent, server):
-                if process is not None:
+                if process is not None and process.poll() is None:
                     subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'], stdout=subprocess.DEVNULL, check=False)
                     process.wait(timeout=15)
 

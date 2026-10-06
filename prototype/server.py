@@ -10,6 +10,7 @@ import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
+from runtime import configure_console
 
 lock = threading.RLock()
 cafes, tasks, inventories, catalog = {}, {}, {}, {}
@@ -290,6 +291,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     global DB_PATH, ADMIN_TOKEN
+    configure_console()
     if getattr(sys, 'frozen', False):
         os.chdir(os.path.dirname(sys.executable))
     path = os.path.abspath('server-config.json')
