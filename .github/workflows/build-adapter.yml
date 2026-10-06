@@ -14,6 +14,8 @@ jobs:
         run: cmake -S adapter -B build/adapter -A x64
       - name: Compile
         run: cmake --build build/adapter --config Release
+      - name: Verify Windows 7 static imports
+        run: python adapter/tests/imports.py build/adapter/Release/PcstoryAdapter.exe
       - name: Verify result classification
         run: ./build/adapter/Release/PcstoryStatusTests.exe
       - name: Verify real cross-process message delivery

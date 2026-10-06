@@ -37,3 +37,14 @@ Windows 测试接收程序只证明 IPC 正确，不证明真实软件下载成�
 修正后的 Windows 构建 37459018931（d663125）成功，8 项状态判断、
 5 项时间判断、7 种 IPC 场景和 3 种无效输入回归测试全部通过。
 交付该构建的 PcstoryDownload-Windows-x64.zip；真实 PCStory 验收仍待测试机确认。
+
+## 旧版 Windows 启动修复
+
+测试机弹窗显示 KERNEL32.dll 缺少 CreateFile2。对 d663125 交付 exe 的
+PE 导入表检查证实它静态引用此 Windows 8 起提供的 API，来自 MSVC 新版
+std::filesystem；_WIN32_WINNT=0x0601 不能限制已编译的标准库依赖。
+v0.1.1 将生产程序路径和目录枚举改为 Windows 7 支持的 Win32 接口，
+显式设置 PE 控制台子系统版本 6.1，并增加完整静态导入允许列表检查。
+旧 exe 运行该检查确实失败，唯一不符项为 KERNEL32.dll!CreateFile2。
+Windows IPC 测试同时使用包含中文和空格的路径，保持下载消息参数不变。
+此静态检查及新版 Windows CI 不等于已经在 Windows 7 上运行成功。

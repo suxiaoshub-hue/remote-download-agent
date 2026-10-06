@@ -1,4 +1,8 @@
-PCStory 直接下载测试 v0.1（Windows x64，无需 Python）
+PCStory 直接下载测试 v0.1.1（Windows x64，无需 Python）
+
+此版修正旧系统启动时“找不到 CreateFile2 / KERNEL32.dll 入口”的错误。
+下载程序使用 Windows 7 支持的文件接口，并在打包前核对静态 API 依赖。
+自动运行测试仍在新版 Windows 上执行；旧测试机的运行结果需要实际确认。
 
 目的：输入游戏编号，直接向已运行的 PCStory 发送新增下载消息。
 不需要服务器、登录精灵软件或抓包。

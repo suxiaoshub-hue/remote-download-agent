@@ -5,7 +5,7 @@ if (!(Test-Path (Join-Path $Bin 'PcstoryCommandTest.exe'))) { throw 'Direct-down
 $root = Join-Path $env:RUNNER_TEMP 'pcstory-command-tests'
 New-Item -ItemType Directory -Force $root | Out-Null
 foreach ($mode in @('rotation', 'started', 'accepted', 'failed', 'quiet', 'wrong-gid', 'timeout')) {
-    $folder = Join-Path $root ($mode + '-' + [guid]::NewGuid().ToString('N'))
+    $folder = Join-Path $root ('中文 路径-' + $mode + '-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Force $folder | Out-Null
     $fixture = Start-Process (Join-Path $Bin 'PcstoryCommandFixture.exe') -ArgumentList @('"' + $folder + '"', $mode) -PassThru
     try {

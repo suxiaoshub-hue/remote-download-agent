@@ -6,7 +6,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -14,7 +13,6 @@
 #include <string>
 #include <vector>
 
-namespace fs = std::filesystem;
 static constexpr wchar_t WindowClass[] = L"Global\\{4F7961BA-AD65-4018-BDEA-1BA1FF77CD66}";
 static constexpr char ExpectedHash[] = "05b9927164f7b3a842f48ffc3bcfd464ae4052e2cdeec4f54902925f2178cdb6";
 
@@ -34,10 +32,43 @@ std::string Utf8(const std::wstring& text) {
     return result;
 }
 
+std::wstring ParentPath(const std::wstring& path) {
+    const auto separator = path.find_last_of(L"\\/");
+    if (separator == std::wstring::npos) return {};
+    return path.substr(0, separator + 1);
+}
+
+std::wstring FileName(const std::wstring& path) {
+    const auto separator = path.find_last_of(L"\\/");
+    return separator == std::wstring::npos ? path : path.substr(separator + 1);
+}
+
+std::wstring JoinPath(const std::wstring& folder, const std::wstring& name) {
+    if (folder.empty()) return name;
+    if (folder.back() == L'\\' || folder.back() == L'/') return folder + name;
+    return folder + L"\\" + name;
+}
+
+std::wstring AbsolutePath(const std::wstring& path) {
+    DWORD required = GetFullPathNameW(path.c_str(), 0, nullptr, nullptr);
+    if (!required) throw std::runtime_error("无法解析文件路径：" + Utf8(path));
+    std::vector<wchar_t> buffer(required);
+    DWORD size = GetFullPathNameW(path.c_str(), required, buffer.data(), nullptr);
+    if (!size || size >= required) throw std::runtime_error("无法解析文件路径：" + Utf8(path));
+    return std::wstring(buffer.data(), size);
+}
+
+std::uintmax_t FileSize(const std::wstring& path) {
+    WIN32_FILE_ATTRIBUTE_DATA attributes{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attributes))
+        throw std::runtime_error("读取日志文件大小失败，Windows 错误=" + std::to_string(GetLastError()));
+    return (static_cast<std::uintmax_t>(attributes.nFileSizeHigh) << 32) | attributes.nFileSizeLow;
+}
+
 struct Reporter {
     std::ofstream file;
-    explicit Reporter(const fs::path& path) : file(path, std::ios::binary | std::ios::trunc) {
-        if (!file) throw std::runtime_error("无法写入结果文件：" + Utf8(path.wstring()));
+    explicit Reporter(const std::wstring& path) : file(path.c_str(), std::ios::binary | std::ios::trunc) {
+        if (!file) throw std::runtime_error("无法写入结果文件：" + Utf8(path));
         file << "\xef\xbb\xbf";
     }
     void Write(const std::string& message) {
@@ -47,23 +78,23 @@ struct Reporter {
     }
 };
 
-fs::path ExecutablePath(HANDLE process) {
+std::wstring ExecutablePath(HANDLE process) {
     std::vector<wchar_t> buffer(32768);
     DWORD size = static_cast<DWORD>(buffer.size());
     if (!QueryFullProcessImageNameW(process, 0, buffer.data(), &size))
         throw std::runtime_error("读取进程路径失败，Windows 错误=" + std::to_string(GetLastError()));
-    return fs::path(std::wstring(buffer.data(), size));
+    return std::wstring(buffer.data(), size);
 }
 
-fs::path OwnFolder() {
+std::wstring OwnFolder() {
     std::vector<wchar_t> buffer(32768);
     DWORD size = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
     if (!size || size >= buffer.size()) throw std::runtime_error("读取程序目录失败");
-    return fs::path(std::wstring(buffer.data(), size)).parent_path();
+    return ParentPath(std::wstring(buffer.data(), size));
 }
 
-std::string Sha256(const fs::path& path) {
-    std::ifstream file(path, std::ios::binary);
+std::string Sha256(const std::wstring& path) {
+    std::ifstream file(path.c_str(), std::ios::binary);
     if (!file) throw std::runtime_error("无法读取 PCStory 程序文件");
     BCRYPT_ALG_HANDLE algorithm = nullptr;
     BCRYPT_HASH_HANDLE hash = nullptr;
@@ -109,35 +140,50 @@ BOOL CALLBACK FindWindow(HWND window, LPARAM parameter) {
 struct LogCursor { std::uintmax_t offset = 0; std::string partial; };
 
 class LogTail {
-    fs::path folder;
-    std::map<fs::path, LogCursor> cursors;
-    std::vector<fs::path> Files() const {
-        std::vector<fs::path> files;
-        std::error_code error;
-        fs::directory_iterator iterator(folder, error), end;
-        if (error) throw std::runtime_error("无法读取日志目录：" + Utf8(folder.wstring()));
-        for (; iterator != end; iterator.increment(error)) {
-            if (error) throw std::runtime_error("枚举日志目录失败");
-            const auto& path = iterator->path();
-            const auto name = path.filename().wstring();
-            if (iterator->is_regular_file() && name.rfind(L"pcstory_", 0) == 0 && path.extension() == L".log")
-                files.push_back(path);
+    std::wstring folder;
+    std::map<std::wstring, LogCursor> cursors;
+    std::vector<std::wstring> Files() const {
+        std::vector<std::wstring> files;
+        DWORD attributes = GetFileAttributesW(folder.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES || !(attributes & FILE_ATTRIBUTE_DIRECTORY))
+            throw std::runtime_error("无法读取日志目录：" + Utf8(folder));
+        WIN32_FIND_DATAW entry{};
+        HANDLE search = FindFirstFileW(JoinPath(folder, L"*").c_str(), &entry);
+        if (search == INVALID_HANDLE_VALUE) {
+            if (GetLastError() == ERROR_FILE_NOT_FOUND) return files;
+            throw std::runtime_error("枚举日志目录失败，Windows 错误=" + std::to_string(GetLastError()));
         }
+        DWORD error = ERROR_SUCCESS;
+        try {
+            do {
+                const std::wstring name = entry.cFileName;
+                if (!(entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
+                    name.rfind(L"pcstory_", 0) == 0 && name.size() >= 4 && name.compare(name.size() - 4, 4, L".log") == 0)
+                    files.push_back(JoinPath(folder, name));
+            } while (FindNextFileW(search, &entry));
+            error = GetLastError();
+        } catch (...) {
+            FindClose(search);
+            throw;
+        }
+        FindClose(search);
+        if (error != ERROR_NO_MORE_FILES)
+            throw std::runtime_error("枚举日志目录失败，Windows 错误=" + std::to_string(error));
         std::sort(files.begin(), files.end());
         return files;
     }
 public:
-    explicit LogTail(const fs::path& logFolder) : folder(logFolder) {
-        for (const auto& path : Files()) cursors[path].offset = fs::file_size(path);
+    explicit LogTail(const std::wstring& logFolder) : folder(logFolder) {
+        for (const auto& path : Files()) cursors[path].offset = FileSize(path);
     }
     std::vector<std::string> Read() {
         std::vector<std::string> lines;
         for (const auto& path : Files()) {
             auto& cursor = cursors[path];
-            const auto size = fs::file_size(path);
+            const auto size = FileSize(path);
             if (size < cursor.offset) { cursor.offset = 0; cursor.partial.clear(); }
             if (size == cursor.offset) continue;
-            std::ifstream file(path, std::ios::binary);
+            std::ifstream file(path.c_str(), std::ios::binary);
             if (!file) continue;
             file.seekg(static_cast<std::streamoff>(cursor.offset));
             std::string bytes(static_cast<std::size_t>(std::min<std::uintmax_t>(size - cursor.offset, 1048576)), '\0');
@@ -162,15 +208,15 @@ struct Options {
     DWORD pid = 0;
     DWORD waitSeconds = 30;
     DWORD messageTimeout = 5000;
-    fs::path output;
-    fs::path logFolder;
+    std::wstring output;
+    std::wstring logFolder;
 };
 
-fs::path ReportPath(int argc, wchar_t** argv, const fs::path& ownFolder) {
+std::wstring ReportPath(int argc, wchar_t** argv, const std::wstring& ownFolder) {
     for (int index = 1; index + 1 < argc; index += 2) {
-        if (std::wstring(argv[index]) == L"--output") return fs::absolute(argv[index + 1]);
+        if (std::wstring(argv[index]) == L"--output") return AbsolutePath(argv[index + 1]);
     }
-    return ownFolder / L"pcstory-download.txt";
+    return JoinPath(ownFolder, L"pcstory-download.txt");
 }
 
 std::string CurrentTimestamp() {
@@ -191,10 +237,10 @@ DWORD Number(const std::wstring& value, DWORD minimum, DWORD maximum) {
     return static_cast<DWORD>(number);
 }
 
-Options Parse(int argc, wchar_t** argv, const fs::path& ownFolder) {
+Options Parse(int argc, wchar_t** argv, const std::wstring& ownFolder) {
     Options options;
-    options.output = ownFolder / L"pcstory-download.txt";
-    const auto config = ownFolder / L"pcstory-adapter.ini";
+    options.output = JoinPath(ownFolder, L"pcstory-download.txt");
+    const auto config = JoinPath(ownFolder, L"pcstory-adapter.ini");
     wchar_t wait[32]{};
     GetPrivateProfileStringW(L"download", L"wait_seconds", L"30", wait, 32, config.c_str());
     options.waitSeconds = Number(wait, 0, 120);
@@ -206,8 +252,8 @@ Options Parse(int argc, wchar_t** argv, const fs::path& ownFolder) {
         else if (key == L"--pid") options.pid = Number(value, 1, 4294967295UL);
         else if (key == L"--wait-seconds") options.waitSeconds = Number(value, 0, 120);
         else if (key == L"--message-timeout-ms") options.messageTimeout = Number(value, 100, 60000);
-        else if (key == L"--output") options.output = fs::absolute(value);
-        else if (key == L"--log-dir") options.logFolder = fs::absolute(value);
+        else if (key == L"--output") options.output = AbsolutePath(value);
+        else if (key == L"--log-dir") options.logFolder = AbsolutePath(value);
         else throw std::runtime_error("未知参数：" + Utf8(key));
     }
     if (!options.gameId) {
@@ -232,18 +278,18 @@ int Download(const Options& options, Reporter& report) {
     Handle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | SYNCHRONIZE, FALSE, pid));
     if (!process.value) throw std::runtime_error("打开 PCStory 失败，请使用相同管理员权限，Windows 错误=" + std::to_string(GetLastError()));
     const auto executable = ExecutablePath(process.value);
-    report.Write("PCStory 路径：" + Utf8(executable.wstring()));
+    report.Write("PCStory 路径：" + Utf8(executable));
     report.Write("PID=" + std::to_string(pid) + " GID=" + std::to_string(options.gameId));
 #ifdef PCSTORY_TEST_FIXTURE
-    if (executable.filename() != L"PcstoryCommandFixture.exe") throw std::runtime_error("测试构建只能调用测试接收程序");
+    if (FileName(executable) != L"PcstoryCommandFixture.exe") throw std::runtime_error("测试构建只能调用测试接收程序");
 #else
     const auto hash = Sha256(executable);
     report.Write("SHA256=" + hash);
     if (hash != ExpectedHash) throw std::runtime_error("PCStory 版本不匹配，未发送命令；此版本只支持已分析的 6.4.2.0 文件");
 #endif
-    const auto logFolder = options.logFolder.empty() ? executable.parent_path() / L"log" : options.logFolder;
+    const auto logFolder = options.logFolder.empty() ? JoinPath(ParentPath(executable), L"log") : options.logFolder;
     LogTail logs(logFolder);
-    report.Write("观察新增日志：" + Utf8(logFolder.wstring()));
+    report.Write("观察新增日志：" + Utf8(logFolder));
     struct Parameters {
         std::uint32_t reserved = 0;
         std::uint8_t force = 0;
@@ -317,7 +363,7 @@ int wmain(int argc, wchar_t** argv) {
     try {
         auto ownFolder = OwnFolder();
         Reporter report(ReportPath(argc, argv, ownFolder));
-        report.Write("PCStory 直接下载测试 v0.1");
+        report.Write("PCStory 直接下载测试 v0.1.1（兼容旧版 Windows 文件接口）");
         try {
             auto options = Parse(argc, argv, ownFolder);
             return Download(options, report);
