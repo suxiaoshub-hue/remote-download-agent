@@ -29,9 +29,14 @@ Agent 配置增加了库存上报项：
 Windows 的磁盘空间接口读取。云端网页通过 `/api/cafes/{id}/inventory`
 搜索指定网吧的状态。
 
-正式部署目录只需要：
+正式部署目录包含：
 
 ```text
 Agent.exe
 agent-config.json
+PcstoryAdapter.exe
+pcstory-adapter.ini
 ```
+
+新版 GitHub 构建会把 `PcstoryAdapter.exe` 一起放进发布 ZIP，Agent 的
+`pcstoryCommand` 默认直接调用同目录适配器；不需要另外复制下载程序。

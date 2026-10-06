@@ -5,6 +5,7 @@ on:
   push:
     paths:
       - 'prototype/**'
+      - 'adapter/**'
       - '.github/workflows/build-agent.yml'
 
 jobs:
@@ -22,6 +23,10 @@ jobs:
           python -m PyInstaller --onefile --name Agent prototype/run_agent_config.py
           python -m PyInstaller --onefile --name Server prototype/server.py
           python -m PyInstaller --onefile --name PcstoryProbe prototype/pcstory_probe.py
+      - name: Build PCStory adapter
+        run: |
+          cmake -S adapter -B build/adapter -A x64
+          cmake --build build/adapter --config Release
       - name: Prepare package
         shell: pwsh
         run: |
@@ -29,6 +34,8 @@ jobs:
           Copy-Item dist/Agent.exe release/Agent.exe
           Copy-Item dist/Server.exe release/Server.exe
           Copy-Item dist/PcstoryProbe.exe release/PcstoryProbe.exe
+          Copy-Item build/adapter/Release/PcstoryAdapter.exe release/PcstoryAdapter.exe
+          Copy-Item adapter/Start-Download.cmd, adapter/pcstory-adapter.ini release/
           Copy-Item prototype/agent-config.json.example release/agent-config.json.example
           @'
           1. 双击 Server.exe，看到 server listening 后保持窗口运行。

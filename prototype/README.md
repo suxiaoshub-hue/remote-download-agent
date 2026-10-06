@@ -25,7 +25,8 @@ python3 agent.py --cafe-id cafe-001 --name "测试网吧" \
 
 网页选择网吧后搜索游戏，会显示已下载、文件缺失、未确认和磁盘剩余空间。
 当前原型仍用模拟任务进度；真实下载命令由 `PcstoryAdapter.exe` 执行，
-接入时应根据其退出码和 PCStory 日志更新任务状态。
+GitHub 发布包会把 `PcstoryAdapter.exe` 放在 Agent 同目录。Agent 应根据
+适配器退出码和 PCStory 日志更新任务状态。
 
 打开 `http://127.0.0.1:8765/`，注册网吧后即可提交任务。Agent 默认使用模拟下载器；Windows 接入层可通过 `--pcstory-command` 调用：
 
