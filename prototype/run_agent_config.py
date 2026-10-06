@@ -11,4 +11,10 @@ import agent
 sys.argv = ["Agent.exe", "--cafe-id", config["cafeId"], "--name", config["name"], "--server", config["server"]]
 if config.get("pcstoryCommand"):
     sys.argv.extend(["--pcstory-command", config["pcstoryCommand"]])
+if config.get("inventoryFile"):
+    sys.argv.extend(["--inventory-file", config["inventoryFile"]])
+for path in config.get("diskPaths", []):
+    sys.argv.extend(["--disk-path", path])
+if config.get("inventoryInterval") is not None:
+    sys.argv.extend(["--inventory-interval", str(config["inventoryInterval"])])
 agent.main()

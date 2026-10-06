@@ -14,6 +14,21 @@ build_windows_agent.bat
 dist\Agent.exe
 ```
 
+Agent 配置增加了库存上报项：
+
+```json
+{
+  "inventoryFile": "games.json",
+  "diskPaths": ["D:\\"],
+  "inventoryInterval": 30
+}
+```
+
+`games.json` 使用 `PcstoryReader` 导出的文件。Agent 不修改 PCStory 数据库，
+只读取清单中的游戏路径并检查是否存在，再上报服务器；磁盘容量使用
+Windows 的磁盘空间接口读取。云端网页通过 `/api/cafes/{id}/inventory`
+搜索指定网吧的状态。
+
 正式部署目录只需要：
 
 ```text
