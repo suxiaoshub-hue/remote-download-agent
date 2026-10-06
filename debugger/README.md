@@ -16,7 +16,9 @@ For network endpoint and protocol discovery, start the tool before PCStory:
 PcstoryDebugger.exe --network --wait --seconds 90
 ```
 
-This mode uses the four hardware breakpoints for `connect`, `send`, `recv`, and `WSARecv`. It records numeric endpoints and outgoing bytes. Receive calls are captured at entry, so their buffer contents are not response data until a return breakpoint is added.
+Version 0.2 uses three entry hardware breakpoints for `connect`, `send`, and `recv`, plus one per-thread return breakpoint. It records signed results and reads successful synchronous `recv` buffers only after return, capped at 256 bytes. Entry/return rows share a per-API call number. Failed calls do not report reply bytes; target WSA error codes are not captured. Calls still pending at detach are marked `RETURN_UNOBSERVED`.
+
+Run `Start-Network.cmd` as administrator for this mode. If PCStory is already running, it attaches immediately; `--wait` only waits when no matching process exists. Keep the same PCStory process running throughout capture. Asynchronous `WSARecv` completion is outside this mode. IPv4 TCP snapshots at attach/detach show target connections and local listeners on ports 12000/12200, with owner PID and executable path. Snapshots can miss short-lived connections and do not establish download command semantics.
 
 Build with MSVC and CMake:
 
@@ -26,4 +28,4 @@ cmake --build build/debugger --config Release
 pwsh -File debugger/tests/smoke.ps1 -Bin build/debugger/Release
 ```
 
-The Windows workflow tests known messages, socket bytes, new-thread capture, restored debug registers, and a surviving target using a synthetic fixture. The static runtime removes the Python and VC redistributable prerequisites. Windows 7 runtime compatibility remains unverified.
+The Windows workflow tests known messages, socket bytes, new-thread capture, actual synchronous replies, successful and failed network calls, port owners, detach during blocked receive, restored debug registers, and a surviving target using a synthetic fixture. The static runtime removes the Python and VC redistributable prerequisites. Windows 7 runtime compatibility remains unverified.

@@ -47,6 +47,11 @@ int main(int argc, char** argv) {
     if (WSAStartup(MAKEWORD(2, 2), &winsock)) return 1;
     SOCKET receiver = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     SOCKET sender = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    const bool network = argc == 2 && std::string(argv[1]) == "--network";
+    SOCKET listener = INVALID_SOCKET;
+    SOCKET blockedReceiver = INVALID_SOCKET;
+    sockaddr_in blockedAddress{};
+    std::thread blockedWorker;
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -54,6 +59,21 @@ int main(int argc, char** argv) {
     int addressSize = sizeof(address);
     getsockname(receiver, reinterpret_cast<sockaddr*>(&address), &addressSize);
     if (connect(sender, reinterpret_cast<sockaddr*>(&address), sizeof(address))) return 3;
+    if (network) {
+        listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        sockaddr_in listenAddress{};
+        listenAddress.sin_family = AF_INET;
+        listenAddress.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        if (bind(listener, reinterpret_cast<sockaddr*>(&listenAddress), sizeof(listenAddress)) ||
+            listen(listener, 1)) return 11;
+        blockedReceiver = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        blockedAddress = listenAddress;
+        if (bind(blockedReceiver, reinterpret_cast<sockaddr*>(&blockedAddress), sizeof(blockedAddress))) return 12;
+        int blockedSize = sizeof(blockedAddress);
+        getsockname(blockedReceiver, reinterpret_cast<sockaddr*>(&blockedAddress), &blockedSize);
+        const DWORD timeout = 10000;
+        setsockopt(blockedReceiver, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+    }
     WNDCLASSW windowClass{};
     windowClass.lpfnWndProc = windowProc;
     windowClass.hInstance = GetModuleHandleW(nullptr);
@@ -92,13 +112,16 @@ int main(int argc, char** argv) {
             DispatchMessageW(&message);
         }
         if (!produced && exists("go.txt")) {
-            if (argc == 2 && std::string(argv[1]) == "--network") {
+            if (network) {
                 if (connect(sender, reinterpret_cast<sockaddr*>(&address), sizeof(address))) return 8;
                 const char reply[] = "PCSTORY_REPLY gid=5131";
                 if (send(sender, reply, sizeof(reply), 0) != sizeof(reply)) return 9;
                 char received[128]{};
                 if (recv(receiver, received, sizeof(received), 0) != sizeof(reply)) return 10;
                 recv(INVALID_SOCKET, received, sizeof(received), 0);
+                connect(INVALID_SOCKET, reinterpret_cast<sockaddr*>(&address), sizeof(address));
+                send(INVALID_SOCKET, reply, sizeof(reply), 0);
+                if (send(sender, reply, 0, 0) != 0 || recv(receiver, received, sizeof(received), 0) != 0) return 13;
             }
             produceCalls(window, sender);
             std::thread worker([sender] {
@@ -106,6 +129,13 @@ int main(int argc, char** argv) {
                 send(sender, data, sizeof(data), 0);
             });
             worker.join();
+            if (network) {
+                blockedWorker = std::thread([blockedReceiver] {
+                    char data[16]{};
+                    recv(blockedReceiver, data, sizeof(data), 0);
+                    marker("blocked-returned.txt");
+                });
+            }
             marker("calls.txt");
             produced = true;
         }
@@ -133,11 +163,19 @@ int main(int argc, char** argv) {
                 }
             });
             verifier.join();
+            if (network) {
+                SOCKET release = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+                sendto(release, "x", 1, 0, reinterpret_cast<sockaddr*>(&blockedAddress), sizeof(blockedAddress));
+                closesocket(release);
+            }
             checked = true;
         }
         Sleep(20);
     }
+    if (blockedWorker.joinable()) blockedWorker.join();
     DestroyWindow(window);
+    if (listener != INVALID_SOCKET) closesocket(listener);
+    if (blockedReceiver != INVALID_SOCKET) closesocket(blockedReceiver);
     closesocket(sender);
     closesocket(receiver);
     WSACleanup();

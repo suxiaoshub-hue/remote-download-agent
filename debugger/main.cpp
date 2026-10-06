@@ -2,6 +2,7 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <tlhelp32.h>
+#include <iphlpapi.h>
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -72,10 +73,21 @@ struct Api {
     size_t calls = 0;
 };
 
+struct PendingCall {
+    size_t api;
+    size_t id;
+    ULONG64 address;
+    ULONG64 stack;
+    ULONG64 socket;
+    ULONG64 buffer;
+    int requested;
+};
+
 struct Thread {
     HANDLE handle;
     CONTEXT original;
     bool suspended = false;
+    std::vector<PendingCall> pending;
 };
 
 class Capture {
@@ -100,6 +112,129 @@ class Capture {
     std::vector<Module> modules;
     std::array<Api, 4> apis{{{L"user32.dll", "SendMessageW"}, {L"user32.dll", "PostMessageW"},
                              {L"ws2_32.dll", "send"}, {L"ws2_32.dll", "WSASend"}}};
+
+    size_t entryCount() const { return networkMode ? 3 : 4; }
+
+    ULONG64 slotAddress(size_t index, const Thread& thread) const {
+        if (networkMode && index == 3)
+            return thread.pending.empty() ? 0 : thread.pending.back().address;
+        return apis[index].address;
+    }
+
+    void setBreakpoints(CONTEXT& context, const Thread& thread) const {
+        context.Dr0 = slotAddress(0, thread);
+        context.Dr1 = slotAddress(1, thread);
+        context.Dr2 = slotAddress(2, thread);
+        context.Dr3 = slotAddress(3, thread);
+        context.Dr7 = thread.original.Dr7 & ~0xffff00ffULL;
+        for (size_t index = 0; index < 4; ++index) {
+            if (slotAddress(index, thread)) context.Dr7 |= 1ULL << (index * 2);
+        }
+    }
+
+    ULONG64 ownedBreakpoints(const CONTEXT& context, const Thread& thread, ULONG64 address) const {
+        ULONG64 owned = 0;
+        const ULONG64 registers[] = {context.Dr0, context.Dr1, context.Dr2, context.Dr3};
+        for (size_t index = 0; index < 4; ++index) {
+            if ((context.Dr6 & (1ULL << index)) && (context.Dr7 & (3ULL << (index * 2))) &&
+                address && slotAddress(index, thread) == address && registers[index] == address)
+                owned |= 1ULL << index;
+        }
+        return owned;
+    }
+
+    void abandon(Thread& thread, DWORD id, const std::string& reason) {
+        for (const auto& call : thread.pending) {
+            log.write(std::string("RETURN_UNOBSERVED API=") + apis[call.api].name + " tid=" +
+                std::to_string(id) + " call=" + std::to_string(call.id) + " reason=" + reason);
+        }
+        thread.pending.clear();
+    }
+
+    void trackReturn(size_t index, DWORD id, Thread& thread, const CONTEXT& context) {
+        if (!networkMode || apis[index].calls > (index < 2 ? 5000 : 10000)) return;
+        while (!thread.pending.empty() && context.Rsp >= thread.pending.back().stack) {
+            const auto& call = thread.pending.back();
+            log.write(std::string("RETURN_UNOBSERVED API=") + apis[call.api].name + " tid=" +
+                std::to_string(id) + " call=" + std::to_string(call.id) + " reason=stack_unwound");
+            thread.pending.pop_back();
+        }
+        ULONG64 address = 0;
+        if (!read(context.Rsp, &address, sizeof(address)) || !address || thread.pending.size() >= 16) {
+            log.write("RETURN_UNOBSERVED tid=" + std::to_string(id) + " reason=unreadable_or_nesting_limit");
+            return;
+        }
+        thread.pending.push_back({index, apis[index].calls, address, context.Rsp, context.Rcx,
+                                  context.Rdx, static_cast<int>(context.R8)});
+    }
+
+    void recordReturn(DWORD id, Thread& thread, const CONTEXT& context) {
+        const auto call = thread.pending.back();
+        if (context.Rsp != call.stack + sizeof(ULONG64)) {
+            log.write("RETURN_SKIPPED tid=" + std::to_string(id) + " reason=stack_mismatch");
+            return;
+        }
+        const LONG result = static_cast<LONG>(static_cast<DWORD>(context.Rax));
+        std::string line = std::string("RETURN API=") + apis[call.api].name + " tid=" + std::to_string(id) +
+            " call=" + std::to_string(call.id) + " socket=" + hex(call.socket) + " result=" + std::to_string(result);
+        if (result == SOCKET_ERROR) line += " failed=true target_wsa_error=not_captured";
+        if (call.api == 2 && result > 0 && call.requested > 0)
+            line += buffer(call.buffer, std::min<ULONG64>(result, call.requested));
+        if (call.api == 2 && result == 0) line += " zero_length_receive=true";
+        log.write(line);
+        thread.pending.pop_back();
+    }
+
+    std::string processPath(DWORD owner) const {
+        HANDLE handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, owner);
+        if (!handle) return "unavailable(error=" + std::to_string(GetLastError()) + ")";
+        std::vector<wchar_t> path(32768);
+        DWORD size = static_cast<DWORD>(path.size());
+        const BOOL success = QueryFullProcessImageNameW(handle, 0, path.data(), &size);
+        const DWORD error = success ? 0 : GetLastError();
+        CloseHandle(handle);
+        return success ? utf8(std::wstring(path.data(), size)) : "unavailable(error=" + std::to_string(error) + ")";
+    }
+
+    std::string tcpEndpoint(DWORD address, DWORD port) const {
+        IN_ADDR ipv4{};
+        ipv4.S_un.S_addr = address;
+        char host[INET_ADDRSTRLEN]{};
+        if (!InetNtopA(AF_INET, &ipv4, host, sizeof(host))) return "unavailable";
+        return std::string(host) + ":" + std::to_string(ntohs(static_cast<u_short>(port)));
+    }
+
+    void scanPorts(const char* phase) {
+        if (!networkMode) return;
+        log.write(std::string("PORT_SCAN phase=") + phase + " family=IPv4");
+        DWORD size = 0;
+        DWORD status = GetExtendedTcpTable(nullptr, &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
+        std::vector<unsigned char> storage;
+        for (int attempt = 0; status == ERROR_INSUFFICIENT_BUFFER && attempt < 4; ++attempt) {
+            storage.resize(size);
+            status = GetExtendedTcpTable(storage.data(), &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
+        }
+        if (status != NO_ERROR || storage.empty()) {
+            log.write("PORT_SCAN_ERROR error=" + std::to_string(status));
+            return;
+        }
+        const auto* table = reinterpret_cast<const MIB_TCPTABLE_OWNER_PID*>(storage.data());
+        size_t matches = 0;
+        std::map<DWORD, std::string> paths;
+        for (DWORD index = 0; index < table->dwNumEntries; ++index) {
+            const auto& row = table->table[index];
+            const auto port = ntohs(static_cast<u_short>(row.dwLocalPort));
+            const bool listener = row.dwState == MIB_TCP_STATE_LISTEN;
+            if (row.dwOwningPid != pid && !(listener && (port == 12000 || port == 12200))) continue;
+            if (!paths.count(row.dwOwningPid)) paths[row.dwOwningPid] = processPath(row.dwOwningPid);
+            log.write("TCP_OWNER pid=" + std::to_string(row.dwOwningPid) + " state=" + std::to_string(row.dwState) +
+                " local=" + tcpEndpoint(row.dwLocalAddr, row.dwLocalPort) +
+                " remote=" + (listener ? std::string("none") : tcpEndpoint(row.dwRemoteAddr, row.dwRemotePort)) +
+                " path=" + paths[row.dwOwningPid]);
+            ++matches;
+        }
+        log.write("PORT_SCAN_END matches=" + std::to_string(matches));
+    }
 
     bool read(ULONG64 address, void* destination, size_t size) const {
         SIZE_T received = 0;
@@ -185,7 +320,8 @@ class Capture {
         CloseHandle(snapshot);
         modules = std::move(current);
         bool changed = false;
-        for (auto& api : apis) {
+        for (size_t index = 0; index < entryCount(); ++index) {
+            auto& api = apis[index];
             ULONG64 address = exportAddress(api.library, api.name);
             if (api.address != address) {
                 api.address = address;
@@ -196,8 +332,8 @@ class Capture {
         if (changed) {
             for (auto& item : threads) arm(item.second);
         }
-        if (!ready && std::all_of(apis.begin(), apis.end(), [](const Api& api) { return api.address != 0; })) {
-            log.write(std::string("CAPTURE_READY APIs=4 mode=") + (networkMode ? "network" : "ui"));
+        if (!ready && std::all_of(apis.begin(), apis.begin() + entryCount(), [](const Api& api) { return api.address != 0; })) {
+            log.write("CAPTURE_READY APIs=" + std::to_string(entryCount()) + " mode=" + (networkMode ? "network returns=true async=false" : "ui"));
             std::puts(networkMode ? "已开始网络捕获。请启动或操作 PCStory；Ctrl+C 可提前结束。" :
                                    "已开始捕获。请在 PCStory 中操作一次下载；Ctrl+C 可提前结束。");
             ready = true;
@@ -208,14 +344,7 @@ class Capture {
         CONTEXT context{};
         context.ContextFlags = CONTEXT_DEBUG_REGISTERS;
         if (!GetThreadContext(thread.handle, &context)) throw winError("Get thread debug registers");
-        context.Dr0 = apis[0].address;
-        context.Dr1 = apis[1].address;
-        context.Dr2 = apis[2].address;
-        context.Dr3 = apis[3].address;
-        context.Dr7 = thread.original.Dr7 & ~0xffff00ffULL;
-        for (size_t index = 0; index < apis.size(); ++index) {
-            if (apis[index].address) context.Dr7 |= 1ULL << (index * 2);
-        }
+        setBreakpoints(context, thread);
         context.Dr6 &= ~0xfULL;
         if (!SetThreadContext(thread.handle, &context)) throw winError("Set thread hardware breakpoints");
     }
@@ -301,6 +430,7 @@ class Capture {
         std::string line = std::string("API=") + api.name + " tid=" + std::to_string(threadId) +
             " caller=" + caller(returnAddress);
         if (networkMode) {
+            line += " call=" + std::to_string(api.calls);
             if (index == 0) {
                 line += " socket=" + hex(context.Rcx) + " sockaddr=" + hex(context.Rdx) +
                     " addrlen=" + std::to_string(DWORD(context.R8)) + " " +
@@ -363,6 +493,7 @@ class Capture {
         case EXIT_THREAD_DEBUG_EVENT: {
             auto found = threads.find(event.dwThreadId);
             if (found != threads.end()) {
+                abandon(found->second, event.dwThreadId, "thread_exit");
                 CloseHandle(found->second.handle);
                 threads.erase(found);
             }
@@ -391,14 +522,16 @@ class Capture {
                 CONTEXT context{};
                 context.ContextFlags = CONTEXT_FULL | CONTEXT_DEBUG_REGISTERS;
                 if (!GetThreadContext(found->second.handle, &context)) throw winError("Read API argument registers");
-                DWORD64 handled = 0;
-                for (size_t index = 0; index < apis.size(); ++index) {
-                    if ((context.Dr6 & (1ULL << index)) && apis[index].address && context.Rip == apis[index].address) {
+                const DWORD64 handled = ownedBreakpoints(context, found->second, context.Rip);
+                for (size_t index = 0; index < entryCount(); ++index) {
+                    if (handled & (1ULL << index)) {
                         record(index, event.dwThreadId, context);
-                        handled |= 1ULL << index;
+                        trackReturn(index, event.dwThreadId, found->second, context);
                     }
                 }
+                if (networkMode && (handled & 8)) recordReturn(event.dwThreadId, found->second, context);
                 if (handled) {
+                    setBreakpoints(context, found->second);
                     context.Dr6 &= ~handled;
                     context.EFlags |= 0x10000;
                     if (!SetThreadContext(found->second.handle, &context)) throw winError("Resume captured API");
@@ -432,6 +565,8 @@ class Capture {
 
     void reportDetach() {
         if (hadAttached && !detachReported) {
+            for (auto& item : threads) abandon(item.second, item.first, "capture_end");
+            scanPorts("detach");
             log.write("DETACHED restored=true");
             detachReported = true;
         }
@@ -454,12 +589,7 @@ class Capture {
                 context.ContextFlags = CONTEXT_DEBUG_REGISTERS;
                 if (!GetThreadContext(found->second.handle, &context)) return false;
                 const ULONG64 address = reinterpret_cast<ULONG64>(exception.ExceptionAddress);
-                ULONG64 owned = 0;
-                const ULONG64 registers[] = {context.Dr0, context.Dr1, context.Dr2, context.Dr3};
-                for (size_t index = 0; index < apis.size(); ++index) {
-                    if ((context.Dr6 & (1ULL << index)) && apis[index].address == address && registers[index] == address)
-                        owned |= 1ULL << index;
-                }
+                const ULONG64 owned = ownedBreakpoints(context, found->second, address);
                 if (owned && !(context.Dr6 & 0xe00f & ~owned)) pendingStatus = DBG_CONTINUE;
             }
         }
@@ -555,6 +685,7 @@ public:
         hadAttached = true;
         if (!DebugSetProcessKillOnExit(FALSE)) throw winError("Disable target termination on debugger exit");
         log.write("ATTACHED pid=" + std::to_string(pid) + " seconds=" + std::to_string(seconds) + " killOnExit=false");
+        scanPorts("attach");
         const ULONGLONG deadline = GetTickCount64() + static_cast<ULONGLONG>(seconds) * 1000;
         while (!exited && !InterlockedCompareExchange(&interrupted, 0, 0) && GetTickCount64() < deadline) {
             DEBUG_EVENT event{};
@@ -574,7 +705,8 @@ public:
         log.write(InterlockedCompareExchange(&interrupted, 0, 0) ? "STOP reason=Ctrl+C" : "STOP reason=timeout_or_exit");
         if (!finish()) throw std::runtime_error("Could not fully restore/detach; see TXT for details");
         size_t calls = 0;
-        for (const auto& api : apis) {
+        for (size_t index = 0; index < entryCount(); ++index) {
+            const auto& api = apis[index];
             calls += api.calls;
             log.write(std::string("TOTAL API=") + api.name + " calls=" + std::to_string(api.calls));
         }
@@ -714,7 +846,7 @@ int wmain(int argc, wchar_t** argv) {
             else throw std::runtime_error("Unknown argument: " + utf8(argument));
         }
         Log log(output);
-        log.write("PcstoryDebugger v0.1 Windows x64; buffers limited to 256 bytes; observational capture only");
+        log.write("PcstoryDebugger v0.2 Windows x64; buffers limited to 256 bytes; observational capture only");
         try {
             if (!pid) {
                 if (waitForProcess) std::puts("正在等待 pcstory.exe，请现在启动或重启 PCStory...");
