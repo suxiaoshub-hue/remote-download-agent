@@ -23,12 +23,16 @@ jobs:
       - name: Verify capture and restoration failure recovery
         shell: pwsh
         run: ./debugger/tests/smoke.ps1 -Bin build/debugger/Release -Fault
+      - name: Verify actual network results
+        shell: pwsh
+        run: ./debugger/tests/network.ps1 -Bin build/debugger/Release
       - name: Package
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force release-debugger | Out-Null
           Copy-Item build/debugger/Release/PcstoryDebugger.exe release-debugger/
           Copy-Item debugger/使用说明.txt release-debugger/
+          if (Test-Path debugger/Start-Network.cmd) { Copy-Item debugger/Start-Network.cmd release-debugger/ }
           Compress-Archive -Path release-debugger/* -DestinationPath PcstoryDebugger-Windows-x64.zip
       - uses: actions/upload-artifact@v4
         if: always()
@@ -38,6 +42,7 @@ jobs:
             ${{ runner.temp }}/pcstory-capture-smoke/*.txt
             ${{ runner.temp }}/pcstory-capture-interrupt/*.txt
             ${{ runner.temp }}/pcstory-capture-fault/*.txt
+            ${{ runner.temp }}/pcstory-capture-network/*.txt
       - uses: actions/upload-artifact@v4
         with:
           name: PcstoryDebugger-Windows-x64

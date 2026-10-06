@@ -92,6 +92,14 @@ int main(int argc, char** argv) {
             DispatchMessageW(&message);
         }
         if (!produced && exists("go.txt")) {
+            if (argc == 2 && std::string(argv[1]) == "--network") {
+                if (connect(sender, reinterpret_cast<sockaddr*>(&address), sizeof(address))) return 8;
+                const char reply[] = "PCSTORY_REPLY gid=5131";
+                if (send(sender, reply, sizeof(reply), 0) != sizeof(reply)) return 9;
+                char received[128]{};
+                if (recv(receiver, received, sizeof(received), 0) != sizeof(reply)) return 10;
+                recv(INVALID_SOCKET, received, sizeof(received), 0);
+            }
             produceCalls(window, sender);
             std::thread worker([sender] {
                 const char data[] = "PCSTORY_NEW_THREAD_TEST";
