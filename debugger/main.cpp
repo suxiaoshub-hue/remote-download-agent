@@ -523,13 +523,13 @@ class Capture {
                 context.ContextFlags = CONTEXT_FULL | CONTEXT_DEBUG_REGISTERS;
                 if (!GetThreadContext(found->second.handle, &context)) throw winError("Read API argument registers");
                 const DWORD64 handled = ownedBreakpoints(context, found->second, context.Rip);
+                if (networkMode && (handled & 8)) recordReturn(event.dwThreadId, found->second, context);
                 for (size_t index = 0; index < entryCount(); ++index) {
                     if (handled & (1ULL << index)) {
                         record(index, event.dwThreadId, context);
                         trackReturn(index, event.dwThreadId, found->second, context);
                     }
                 }
-                if (networkMode && (handled & 8)) recordReturn(event.dwThreadId, found->second, context);
                 if (handled) {
                     setBreakpoints(context, found->second);
                     context.Dr6 &= ~handled;
