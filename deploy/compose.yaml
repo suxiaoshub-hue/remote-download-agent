@@ -1,0 +1,24 @@
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    volumes:
+      - server-data:/data
+  proxy:
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      DOWNLOAD_DOMAIN: ${DOWNLOAD_DOMAIN:?填写后台域名}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    depends_on:
+      - server
+volumes:
+  server-data:
+  caddy-data:

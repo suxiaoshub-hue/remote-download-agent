@@ -1,9 +1,9 @@
 {
-  "cafeId": "cafe-001",
+  "cafeId": "从网页下载配置自动生成",
   "name": "测试网吧",
   "server": "https://your-server.example.com",
-  "pcstoryCommand": "PcstoryAdapter.exe --game-id {game_id}",
-  "inventoryFile": "games.json",
-  "diskPaths": ["D:\\"],
+  "agentToken": "从网页下载配置自动生成",
+  "pcstoryFolder": "",
+  "adapter": "PcstoryAdapter.exe",
   "inventoryInterval": 30
 }

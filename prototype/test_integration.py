@@ -1,47 +1,144 @@
-#!/usr/bin/env python3
-import json, os, tempfile, threading, time, urllib.error, urllib.request
+import json
+import os
+import tempfile
+import threading
+import time
+import unittest
+import urllib.error
+import urllib.request
+from http.server import ThreadingHTTPServer
+
 import server
 
-def call(path, method="GET", payload=None):
-    body = json.dumps(payload).encode() if payload is not None else None
-    request = urllib.request.Request("http://127.0.0.1:18765" + path, data=body, method=method, headers={"Content-Type":"application/json"})
-    with urllib.request.urlopen(request) as response: return json.loads(response.read())
 
-server.PORT = 18765
-server.DB_PATH = os.path.join(tempfile.gettempdir(), "remote_download_integration.db")
-server.load_db()
-from http.server import ThreadingHTTPServer
-http = ThreadingHTTPServer(("127.0.0.1", 18765), server.Handler)
-threading.Thread(target=http.serve_forever, daemon=True).start()
-call("/api/agents/register", "POST", {"cafeId":"test-cafe", "name":"集成测试网吧"})
-inventory = call("/api/agents/inventory", "POST", {
-    "cafeId": "test-cafe",
-    "games": [
-        {"gameId": 5131, "name": "Roblox", "status": "installed", "localPath": "D:\\Games\\Roblox", "sizeBytes": 1200},
-        {"gameId": 8044, "name": "CSGO", "status": "missing", "localPath": "D:\\Games\\CSGO", "sizeBytes": 5000}
-    ],
-    "disks": [{"path": "D:\\", "freeBytes": 9000, "totalBytes": 10000}]
-})
-assert inventory["cafeId"] == "test-cafe"
-found = call("/api/cafes/test-cafe/inventory?query=rob")
-assert found["games"][0]["gameId"] == 5131
-assert found["games"][0]["status"] == "installed"
-assert found["disks"][0]["freeBytes"] == 9000
-missing = call("/api/cafes/test-cafe/inventory?query=csgo")
-assert missing["games"][0]["status"] == "missing"
-not_downloaded = call("/api/cafes/test-cafe/inventory?query=dota")
-assert not_downloaded["games"][0]["status"] == "not_installed"
-try:
-    call("/api/agents/inventory", "POST", {"cafeId":"test-cafe", "games":[{"gameId":1,"status":"bad"}], "disks":[]})
-    raise AssertionError("invalid inventory was accepted")
-except urllib.error.HTTPError as error:
-    assert error.code == 400
-    assert json.loads(error.read())["error"] == "invalid inventory game status"
-task = call("/api/tasks", "POST", {"cafeId":"test-cafe", "gameId":8263})
-accepted = call("/api/tasks/next/test-cafe")
-assert accepted["id"] == task["id"]
-call("/api/tasks/%s/status" % task["id"], "POST", {"status":"completed", "progress":100})
-state = call("/api/state")
-assert next(item for item in state["tasks"] if item["id"] == task["id"])["status"] == "completed"
-http.shutdown()
-print("integration test passed")
+class IntegrationTests(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        server.DB_PATH = os.path.join(self.folder.name, 'test.db')
+        server.ADMIN_TOKEN = 'integration-admin-secret'
+        server.cafes.clear()
+        server.tasks.clear()
+        server.inventories.clear()
+        if hasattr(server, 'catalog'):
+            server.catalog.clear()
+        server.load_db()
+        self.http = ThreadingHTTPServer(('127.0.0.1', 0), server.Handler)
+        self.base = 'http://127.0.0.1:' + str(self.http.server_port)
+        self.thread = threading.Thread(target=self.http.serve_forever, daemon=True)
+        self.thread.start()
+
+    def tearDown(self):
+        self.http.shutdown()
+        self.http.server_close()
+        self.thread.join()
+        self.folder.cleanup()
+
+    def call(self, path, method='GET', payload=None, token='integration-admin-secret', expected=200):
+        data = json.dumps(payload).encode() if payload is not None else None
+        req = urllib.request.Request(self.base + path, data=data, method=method,
+                                     headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token})
+        try:
+            response = urllib.request.urlopen(req)
+        except urllib.error.HTTPError as error:
+            response = error
+        with response:
+            self.assertEqual(response.status, expected)
+            return json.loads(response.read())
+
+    def provision(self, name='测试网吧'):
+        created = self.call('/api/cafes', 'POST', {'name': name, 'server': self.base}, expected=201)
+        self.call('/api/agents/register', 'POST', {'cafeId': created['id'], 'name': 'initial name'}, token=created['agentToken'])
+        return created
+
+    def report(self, cafe):
+        return self.call('/api/agents/inventory', 'POST', {
+            'cafeId': cafe['id'], 'complete': True,
+            'games': [{'gameId': 5131, 'name': 'Roblox', 'status': 'not_installed', 'sizeBytes': 5000},
+                      {'gameId': 8044, 'name': 'CSGO', 'status': 'installed', 'localPath': 'D:\\CSGO'}],
+            'disks': [{'path': 'D:\\', 'freeBytes': 9000, 'totalBytes': 10000, 'downloadDisk': True}]
+        }, token=cafe['agentToken'])
+
+    def test_auth_required_and_cafe_isolation(self):
+        self.call('/api/state', token='', expected=401)
+        first = self.provision()
+        second = self.provision('第二家网吧')
+        self.call('/api/agents/heartbeat', 'POST', {'cafeId': second['id']}, token=first['agentToken'], expected=403)
+        self.call('/api/tasks/next/' + second['id'], token=first['agentToken'], expected=403)
+
+    def test_webpage_is_served_before_login(self):
+        with urllib.request.urlopen(self.base + '/') as response:
+            self.assertEqual(response.status, 200)
+            self.assertIn('网吧远程下载'.encode(), response.read())
+
+    def test_new_inventory_completes_started_task_after_agent_restart(self):
+        cafe = self.provision()
+        self.report(cafe)
+        task = self.call('/api/tasks', 'POST', {'cafeId': cafe['id'], 'gameId': 5131}, expected=201)
+        self.call('/api/tasks/next/' + cafe['id'], token=cafe['agentToken'])
+        self.call('/api/tasks/' + task['id'] + '/status', 'POST', {'status': 'accepted'}, token=cafe['agentToken'])
+        self.call('/api/tasks/' + task['id'] + '/status', 'POST', {'status': 'downloading'}, token=cafe['agentToken'])
+        server.load_db()
+        self.call('/api/agents/inventory', 'POST', {
+            'cafeId': cafe['id'], 'complete': True,
+            'games': [{'gameId': 5131, 'name': 'Roblox', 'status': 'installed', 'localPath': 'F:\\Roblox'}],
+            'disks': [{'path': 'F:\\', 'freeBytes': 9000, 'totalBytes': 10000, 'downloadDisk': True}]
+        }, token=cafe['agentToken'])
+        self.assertEqual(self.call('/api/state')['tasks'][0]['status'], 'completed')
+        self.assertEqual(self.call('/api/tasks/next/' + cafe['id'], token=cafe['agentToken']), {})
+        self.call('/api/tasks/' + task['id'] + '/status', 'POST', {'status': 'downloading'}, token=cafe['agentToken'])
+        self.assertEqual(self.call('/api/state')['tasks'][0]['status'], 'completed')
+
+    def test_live_inventory_real_task_and_persistence(self):
+        cafe = self.provision()
+        self.report(cafe)
+        found = self.call('/api/cafes/' + cafe['id'] + '/inventory?query=rob')
+        self.assertEqual(found['games'][0]['status'], 'not_installed')
+        self.assertEqual(found['disks'][0]['freeBytes'], 9000)
+        self.assertTrue(found['fresh'])
+        self.call('/api/cafes/' + cafe['id'] + '/rename', 'POST', {'name': '云端名字'})
+        self.call('/api/agents/register', 'POST', {'cafeId': cafe['id'], 'name': 'old'}, token=cafe['agentToken'])
+        self.assertEqual(self.call('/api/state')['cafes'][0]['name'], '云端名字')
+        task = self.call('/api/tasks', 'POST', {'cafeId': cafe['id'], 'gameId': 5131}, expected=201)
+        self.call('/api/tasks', 'POST', {'cafeId': cafe['id'], 'gameId': 5131}, expected=409)
+        self.call('/api/tasks', 'POST', {'cafeId': cafe['id'], 'gameId': 8044}, expected=409)
+        accepted = self.call('/api/tasks/next/' + cafe['id'], token=cafe['agentToken'])
+        self.assertEqual(accepted['id'], task['id'])
+        replay = self.call('/api/tasks/next/' + cafe['id'], token=cafe['agentToken'])
+        self.assertEqual(replay['id'], task['id'])
+        self.call('/api/tasks/' + task['id'] + '/status', 'POST', {'status': 'accepted'}, token=cafe['agentToken'])
+        self.call('/api/tasks/' + task['id'] + '/status', 'POST', {'status': 'downloading'}, token=cafe['agentToken'])
+        self.assertIsNone(self.call('/api/state')['tasks'][0]['progress'])
+        server.load_db()
+        self.assertEqual(server.inventories[cafe['id']]['games'][5131]['name'], 'Roblox')
+
+    def test_unknown_and_stale_inventory_cannot_start_download(self):
+        cafe = self.provision()
+        self.call('/api/tasks', 'POST', {'cafeId': cafe['id'], 'gameId': 5131}, expected=409)
+        self.report(cafe)
+        server.inventories[cafe['id']]['updatedAt'] = time.time() - 400
+        found = self.call('/api/cafes/' + cafe['id'] + '/inventory')
+        self.assertFalse(found['fresh'])
+        self.call('/api/tasks', 'POST', {'cafeId': cafe['id'], 'gameId': 5131}, expected=409)
+
+    def test_disk_shortage_and_queued_cancellation(self):
+        cafe = self.provision()
+        self.report(cafe)
+        server.inventories[cafe['id']]['disks'][0]['freeBytes'] = 100
+        self.call('/api/tasks', 'POST', {'cafeId': cafe['id'], 'gameId': 5131}, expected=409)
+        server.inventories[cafe['id']]['disks'][0]['freeBytes'] = 9000
+        task = self.call('/api/tasks', 'POST', {'cafeId': cafe['id'], 'gameId': 5131}, expected=201)
+        self.call('/api/tasks/' + task['id'] + '/cancel', 'POST', {})
+        self.assertEqual(self.call('/api/tasks/next/' + cafe['id'], token=cafe['agentToken']), {})
+
+    def test_accepted_recovery_still_requires_fresh_inventory(self):
+        cafe = self.provision()
+        self.report(cafe)
+        task = self.call('/api/tasks', 'POST', {'cafeId': cafe['id'], 'gameId': 5131}, expected=201)
+        self.call('/api/tasks/next/' + cafe['id'], token=cafe['agentToken'])
+        self.call('/api/tasks/' + task['id'] + '/status', 'POST', {'status': 'accepted'}, token=cafe['agentToken'])
+        self.call('/api/agents/error', 'POST', {'cafeId': cafe['id'], 'error': '数据库正在写入'}, token=cafe['agentToken'])
+        self.call('/api/tasks/' + task['id'] + '/status', 'POST', {'status': 'accepted'}, token=cafe['agentToken'], expected=409)
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -18,33 +18,31 @@ jobs:
           python-version: '3.8'
       - name: Build Agent.exe
         run: |
-          python -m pip install "pyinstaller==5.13.2"
-          python prototype/test_integration.py
+          python -m pip install "pyinstaller==5.13.2" "cryptography==42.0.8"
+          python -m unittest discover -s prototype -p "test*.py"
           python -m PyInstaller --onefile --name Agent prototype/run_agent_config.py
-          python -m PyInstaller --onefile --name Server prototype/server.py
-          python -m PyInstaller --onefile --name PcstoryProbe prototype/pcstory_probe.py
+          python -m PyInstaller --onefile --name Server --add-data "prototype/web.html;." prototype/server.py
+      - name: Verify frozen programs
+        run: python prototype/windows-smoke.py
       - name: Build PCStory adapter
         run: |
           cmake -S adapter -B build/adapter -A x64
           cmake --build build/adapter --config Release
+          python adapter/tests/imports.py build/adapter/Release/PcstoryAdapter.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Import audit failed' }
+          ./build/adapter/Release/PcstoryStatusTests.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Native status tests failed' }
+          ./adapter/tests/windows.ps1 -Bin build/adapter/Release
       - name: Prepare package
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force release | Out-Null
           Copy-Item dist/Agent.exe release/Agent.exe
           Copy-Item dist/Server.exe release/Server.exe
-          Copy-Item dist/PcstoryProbe.exe release/PcstoryProbe.exe
           Copy-Item build/adapter/Release/PcstoryAdapter.exe release/PcstoryAdapter.exe
           Copy-Item adapter/Start-Download.cmd, adapter/pcstory-adapter.ini release/
           Copy-Item prototype/agent-config.json.example release/agent-config.json.example
-          @'
-          1. 双击 Server.exe，看到 server listening 后保持窗口运行。
-          2. 将 agent-config.json.example 改名为 agent-config.json，并填写云端地址、网吧名称、磁盘盘符。
-          3. 将 PcstoryReader 导出的 games.json 放在 Agent.exe 同目录；Agent 会检查 LocalPath 是否存在并上报库存。
-          4. 双击 Agent.exe。服务器地址必须能从网吧访问，不能填写 127.0.0.1（除非服务端就在本机）。
-          5. 浏览器打开服务器地址，例如 http://127.0.0.1:8765/。
-          6. 选择网吧并搜索游戏，查看已下载/文件缺失/未知及磁盘剩余容量，再下发任务。
-          '@ | Set-Content release/使用说明.txt -Encoding UTF8
+          Copy-Item prototype/Start-Agent.cmd, prototype/Start-Server.cmd, prototype/使用说明.txt release/
           Compress-Archive -Path release/* -DestinationPath remote-download-agent-windows.zip -Force
       - uses: actions/upload-artifact@v4
         with:

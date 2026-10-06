@@ -5,3 +5,11 @@ dist/
 build/
 *.spec
 .DS_Store
+agent-config.json
+server-config.json
+agent-task.json
+agent-task.json.tmp
+agent-instance.lock
+agent.log
+server.log
+pcstory-task-*.txt

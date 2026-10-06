@@ -1,92 +1,145 @@
-#!/usr/bin/env python3
-import argparse, json, ntpath, os, shutil, subprocess, time, urllib.request
+import argparse
+import json
+import os
+import subprocess
+import time
+import urllib.parse
+import urllib.error
+import urllib.request
 
-def request(url, method="GET", payload=None):
-    body = json.dumps(payload).encode() if payload is not None else None
-    req = urllib.request.Request(url, data=body, method=method, headers={"Content-Type":"application/json"})
-    with urllib.request.urlopen(req, timeout=10) as response: return json.loads(response.read() or b"{}")
+import inventory
+
+
+def request(url, method='GET', payload=None, token=''):
+    body = json.dumps(payload).encode('utf-8') if payload is not None else None
+    headers = {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token}
+    req = urllib.request.Request(url, data=body, method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=15) as response:
+        return json.loads(response.read() or b'{}')
+
 
 class PcstoryAdapter:
-    def __init__(self, command=None): self.progress = 0; self.command = command
+    def __init__(self, executable='PcstoryAdapter.exe'):
+        self.executable = os.path.abspath(executable)
+        self.process = None
+        self.task = None
+
     def start(self, task):
-        if self.command:
-            command = self.command.format(game_id=task["gameId"], force=str(task["forceUpdate"]).lower())
-            print("启动 PCStory 适配器:", command)
-            subprocess.Popen(command, shell=True, cwd=os.getcwd())
-        else:
-            print(f"[模拟] PCStory 添加任务 gameId={task['gameId']} force={task['forceUpdate']}")
-        self.progress = 0
-    def tick(self): self.progress = min(100, self.progress + 10); return self.progress
+        if self.process is not None:
+            raise ValueError('仍有下载命令正在执行')
+        self.task = task
+        output = os.path.abspath('pcstory-task-' + task['id'] + '.txt')
+        self.process = subprocess.Popen([self.executable, '--game-id', str(int(task['gameId'])), '--output', output], cwd=os.path.dirname(self.executable))
 
-def _value(item, *names, default=None):
-    for name in names:
-        if name in item: return item[name]
-    return default
+    @staticmethod
+    def result_status(code):
+        return {0: 'downloading', 2: 'waiting', 3: 'failed', 4: 'uncertain', 5: 'uncertain'}.get(code, 'failed')
 
-def collect_inventory(inventory_file=None, disk_paths=None):
-    games = []
-    if inventory_file:
-        with open(inventory_file, encoding="utf-8-sig") as file:
-            source = json.load(file)
-        source = source.get("games", source) if isinstance(source, dict) else source
-        for item in source:
-            game_id = int(_value(item, "gameId", "GID"))
-            path = str(_value(item, "localPath", "LocalPath", default="") or "")
-            explicit = _value(item, "status", default=None)
-            if explicit in ("installed", "missing", "downloading", "unknown"):
-                status = explicit
-            elif path:
-                status = "installed" if os.path.exists(path) else "missing"
-            else:
-                status = "unknown"
-            games.append({
-                "gameId": game_id,
-                "name": str(_value(item, "name", "Name", default=game_id)),
-                "status": status,
-                "localPath": path,
-                "localVersion": int(_value(item, "localVersion", "LocalVersion", default=0) or 0),
-                "serverVersion": int(_value(item, "serverVersion", "ServerVersion", default=0) or 0),
-                "sizeBytes": max(0, int(_value(item, "sizeBytes", "SizeBytes", default=0) or 0)),
-            })
-    roots = list(disk_paths or [])
-    for game in games:
-        drive, _ = ntpath.splitdrive(game["localPath"])
-        if drive and drive + "\\" not in roots:
-            roots.append(drive + "\\")
-    disks = []
-    for path in roots:
-        try:
-            usage = shutil.disk_usage(path)
-        except OSError:
-            continue
-        disks.append({"path": path, "freeBytes": usage.free, "totalBytes": usage.total})
-    return {"games": games, "disks": disks}
+    def poll(self):
+        if self.process is None:
+            return None
+        code = self.process.poll()
+        if code is None:
+            return None
+        self.process = None
+        return self.result_status(code)
+
+
+class TaskJournal:
+    def __init__(self, path='agent-task.json'):
+        self.path = path
+        self.record = None
+        if os.path.exists(path):
+            with open(path, encoding='utf-8') as file:
+                self.record = json.load(file)
+            if self.record['phase'] == 'executing':
+                self.save(dict(self.record, phase='result', status='uncertain'))
+
+    def save(self, record):
+        with open(self.path + '.tmp', 'w', encoding='utf-8') as file:
+            json.dump(record, file)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(self.path + '.tmp', self.path)
+        self.record = record
+
+    def clear(self):
+        os.unlink(self.path)
+        self.record = None
+
 
 def main():
-    p=argparse.ArgumentParser(); p.add_argument("--cafe-id",required=True); p.add_argument("--name",required=True); p.add_argument("--server",default="http://127.0.0.1:8765"); p.add_argument("--pcstory-command"); p.add_argument("--inventory-file"); p.add_argument("--disk-path",action="append",default=[]); p.add_argument("--inventory-interval",type=int,default=30); args=p.parse_args()
-    base=args.server.rstrip("/"); request(base+"/api/agents/register","POST",{"cafeId":args.cafe_id,"name":args.name}); adapter=PcstoryAdapter(args.pcstory_command); print("agent online")
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--cafe-id', required=True)
+    parser.add_argument('--name', default='网吧')
+    parser.add_argument('--server', required=True)
+    parser.add_argument('--agent-token', required=True)
+    parser.add_argument('--pcstory-folder', default='')
+    parser.add_argument('--adapter', default='PcstoryAdapter.exe')
+    parser.add_argument('--inventory-interval', type=int, default=30)
+    args = parser.parse_args()
+    base = args.server.rstrip('/')
+    cafe_path = urllib.parse.quote(args.cafe_id, safe='')
+    adapter = PcstoryAdapter(args.adapter)
+    registered = False
     last_inventory = 0
+    journal = TaskJournal()
+    if journal.record and journal.record['task']['cafeId'] != args.cafe_id:
+        raise ValueError('agent-task.json 属于其他网吧，请恢复原配置处理此任务')
+
+    def api(path, method='GET', payload=None):
+        return request(base + path, method, payload, args.agent_token)
+
     while True:
         try:
-            request(base+"/api/agents/heartbeat","POST",{"cafeId":args.cafe_id})
-            if time.time() - last_inventory >= max(5, args.inventory_interval):
-                snapshot = collect_inventory(args.inventory_file, args.disk_path)
-                request(base+"/api/agents/inventory","POST",dict(snapshot, cafeId=args.cafe_id))
+            if not registered:
+                api('/api/agents/register', 'POST', {'cafeId': args.cafe_id, 'name': args.name})
+                registered = True
+            api('/api/agents/heartbeat', 'POST', {'cafeId': args.cafe_id})
+            result = adapter.poll()
+            if result:
+                journal.save({'task': adapter.task, 'phase': 'result', 'status': result})
+            if journal.record and journal.record['phase'] == 'result':
+                api('/api/tasks/' + journal.record['task']['id'] + '/status', 'POST', {'status': journal.record['status']})
+                journal.clear()
+            if time.time() - last_inventory >= max(10, args.inventory_interval):
+                try:
+                    folder = args.pcstory_folder or inventory.locate_folder()
+                    current = inventory.snapshot(folder)
+                    api('/api/agents/inventory', 'POST', dict(current, cafeId=args.cafe_id))
+                    print('清单上报：%d 个游戏，%d 个下载磁盘' % (len(current['games']), len(current['disks'])))
+                except Exception as error:
+                    print('清单读取失败，保留上次结果：', error)
+                    api('/api/agents/error', 'POST', {'cafeId': args.cafe_id, 'error': str(error)})
                 last_inventory = time.time()
-                print("inventory reported: %d games, %d disks" % (len(snapshot["games"]), len(snapshot["disks"])))
-            task=request(base+"/api/tasks/next/"+args.cafe_id)
-            if task.get("id"):
-                adapter.start(task)
-                while adapter.progress < 100:
-                    latest = request(base+"/api/state")
-                    current = next((item for item in latest.get("tasks", []) if item.get("id") == task["id"]), task)
-                    if current.get("status") == "cancelled":
-                        print("task cancelled")
-                        break
-                    progress=adapter.tick(); request(base+f"/api/tasks/{task['id']}/status","POST",{"status":"downloading","progress":progress}); time.sleep(1)
-                if current.get("status") != "cancelled":
-                    request(base+f"/api/tasks/{task['id']}/status","POST",{"status":"completed","progress":100}); print("task completed")
-            time.sleep(1)
-        except Exception as exc: print("agent error:", exc); time.sleep(3)
+            if adapter.process is None and journal.record is None:
+                task = api('/api/tasks/next/' + cafe_path)
+                if task.get('id'):
+                    journal.save({'task': task, 'phase': 'prepared'})
+            if journal.record and journal.record['phase'] == 'prepared':
+                task = journal.record['task']
+                try:
+                    response = api('/api/tasks/' + task['id'] + '/status', 'POST', {'status': 'accepted'})
+                    if response['status'] != 'accepted':
+                        journal.clear()
+                    else:
+                        journal.save(dict(journal.record, phase='executing'))
+                        try:
+                            adapter.start(task)
+                        except Exception as error:
+                            print('下载命令失败：', error)
+                            journal.save({'task': task, 'phase': 'result', 'status': 'failed'})
+                except urllib.error.HTTPError as error:
+                    if error.code == 409:
+                        journal.save({'task': task, 'phase': 'result', 'status': 'failed'})
+                    else:
+                        raise
+            time.sleep(2)
+        except Exception as error:
+            print('服务器连接失败，自动重试：', error)
+            registered = False
+            time.sleep(5)
 
-if __name__ == "__main__": main()
+
+if __name__ == '__main__':
+    main()

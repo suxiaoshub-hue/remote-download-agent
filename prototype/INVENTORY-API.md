@@ -1,52 +1,13 @@
-# 网吧库存接口
+# API
 
-Agent 注册后，定期向 `POST /api/agents/inventory` 发送当前快照：
+所有 API 使用 Authorization: Bearer TOKEN。网页管理员使用 server-config.json 的 adminToken；每家 Agent 使用添加网吧时生成的 agentToken。Agent 凭证仅操作对应网吧。网页根路径公开，接口均有认证。
 
-```json
-{
-  "cafeId": "cafe-001",
-  "games": [{
-    "gameId": 5131,
-    "name": "Roblox",
-    "status": "installed",
-    "localPath": "D:\\Games\\Roblox",
-    "localVersion": 1,
-    "serverVersion": 1,
-    "sizeBytes": 1200
-  }],
-  "disks": [{
-    "path": "D:\\",
-    "freeBytes": 9000,
-    "totalBytes": 10000
-  }]
-}
-```
+管理员：GET /api/state；POST /api/cafes（name/server，返回专属配置）；POST /api/cafes/{id}/rename；GET /api/cafes/{id}/inventory?query=名称或编号；POST /api/tasks（cafeId/gameId）；POST /api/tasks/{id}/cancel（仅 queued）。
 
-`status` 只允许 `installed`、`missing`、`not_installed`、`downloading`、`unknown`。
-Agent 读取清单中的 `LocalPath`，并检查路径是否存在；数据库有记录但
-路径不存在时上报 `missing`。没有本地路径时上报 `unknown`，不把数据库
-目录记录误报为已下载。
+Agent：POST /api/agents/register、heartbeat、inventory、error，均带 cafeId；GET /api/tasks/next/{cafeId}；POST /api/tasks/{id}/status。
 
-查询：
+inventory 包含 complete、games 和 disks。游戏字段 gameId、name、status、localPath、sizeBytes、localVersion、serverVersion。状态 installed/not_installed/missing/pending/unknown。磁盘字段 path/freeBytes/totalBytes/downloadDisk。服务端赋更新时间；心跳超过 20 秒、库存超过 120 秒或读取报错即禁止下载。
 
-```text
-GET /api/cafes/{cafeId}/inventory?query=roblox
-```
+领取任务：queued → delivering，同一未确认任务可重新领取；Agent 写入本地 prepared 记录后确认 accepted，写 executing 后才调用原生程序。结果存储后重试上传。Agent 重启遇到 executing 改为 uncertain，避免重复执行。后续真实库存的 installed 记录可确认 completed。相同状态上传幂等。
 
-返回匹配的游戏和该网吧最近一次上报的磁盘空间。服务器会把中央游戏目录
-和网吧库存合并：目录中存在、但该网吧库存没有的游戏显示为 `not_installed`
-（网页显示“未下载”）。从未上报库存的网吧返回 `reported=false` 和空游戏列表，
-避免把离线网吧误报为未下载。网页只有 `installed` 行显示“已下载”，其他状态
-提供下发按钮。
-
-Agent 配置：
-
-```json
-{
-  "inventoryFile": "games.json",
-  "diskPaths": ["D:\\"],
-  "inventoryInterval": 30
-}
-```
-
-如果 `diskPaths` 留空，Agent 会从本地游戏路径自动推断 Windows 盘符。
+未下载判断来自 PCStory 完整目录内的明确记录，不能将没有库存或失效清单当成未下载。磁盘只上报 PCStory 配置指定盘。接口拒绝重复活动任务、已下载/未知状态及空间不足。

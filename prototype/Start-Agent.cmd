@@ -1,4 +1,5 @@
 @echo off
 cd /d "%~dp0"
-python run_agent_config.py
+Agent.exe
+echo.
 pause

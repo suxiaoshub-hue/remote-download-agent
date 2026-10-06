@@ -1,0 +1,30 @@
+网吧远程下载测试版
+
+无需安装 Python，也暂时无需购买云服务器。同一台 Windows 测试机可运行服务端和 Agent。
+
+1. 全部解压到固定目录，双击 Start-Server.cmd，保持窗口打开。
+2. 打开本目录的 server-config.json，复制 adminToken 后面的密钥。
+3. 浏览器打开 http://127.0.0.1:8765，粘贴密钥登录。
+4. 点击“添加网吧”，填网吧名称，服务器地址用 http://127.0.0.1:8765。
+5. 网页会下载 agent-config.json；把这个文件放到 Agent.exe 同目录。
+6. 打开 PCStory，再以相同管理员权限运行 Start-Agent.cmd。
+7. 等待约 30 秒，在网页选网吧、搜索游戏、查看游戏状态和 PCStory 下载盘剩余容量。
+8. 点击未下载游戏的“下载”，检查 PCStory 是否真实新增并开始下载。
+
+配置 pcstoryFolder 留空会自动定位 PCStory。如果定位失败，填写 PCStory 所在文件夹，例如 D:\pcstory5.0。JSON 中反斜杠写成双反斜杠：D:\\pcstory5.0。
+
+服务器地址填写服务端所在地，不能把每家网吧各自的 IP 当成同一个云服务器。仅服务端和 Agent 都在同一台电脑测试时填写 127.0.0.1。
+
+云服务器购买后在公网部署服务端和 HTTPS，所有网吧使用对应 HTTPS 地址，网吧只保留 Agent 和适配器，无需开放网吧端口。
+
+游戏状态自动从 PCStory 数据库读取，无需手工导出清单。
+“已下载”依据 PCStory 本地记录和目录，不扫描全部游戏文件。
+“已启动下载”不等于完成；后续库存确认完成。不显示虚构进度。
+仅取消未下发任务；暂停真实下载请在 PCStory 中操作。
+不确定的命令不能自动重发，请查看 PCStory 和日志。
+不同 PCStory 程序版本会拒绝操作。本版基于之前已经下载成功的版本。
+
+故障查看 agent.log、server.log、pcstory-task-任务编号.txt，网页也会显示库存错误。
+CMD 窗口会保留启动错误，便于查看。
+每家网吧须从网页单独添加并下载配置，不要多台机器使用同一份凭证。
+请保留 server-config.json、remote_download.db、agent-config.json，里面的凭证不要发到公开仓库。
