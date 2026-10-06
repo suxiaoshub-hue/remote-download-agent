@@ -1,0 +1,37 @@
+name: Build Windows PCStory Download Command
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'adapter/**'
+      - '.github/workflows/build-adapter.yml'
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure Windows x64
+        run: cmake -S adapter -B build/adapter -A x64
+      - name: Compile
+        run: cmake --build build/adapter --config Release
+      - name: Verify result classification
+        run: ./build/adapter/Release/PcstoryStatusTests.exe
+      - name: Verify real cross-process message delivery
+        shell: pwsh
+        run: ./adapter/tests/windows.ps1 -Bin build/adapter/Release
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release-adapter | Out-Null
+          Copy-Item build/adapter/Release/PcstoryAdapter.exe release-adapter/
+          Copy-Item adapter/Start-Download.cmd, adapter/pcstory-adapter.ini, adapter/使用说明.txt release-adapter/
+          Compress-Archive -Path release-adapter/* -DestinationPath PcstoryDownload-Windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pcstory-command-test-results
+          path: ${{ runner.temp }}/pcstory-command-tests/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PcstoryDownload-Windows-x64
+          path: PcstoryDownload-Windows-x64.zip
