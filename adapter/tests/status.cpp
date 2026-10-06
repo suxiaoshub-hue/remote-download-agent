@@ -19,5 +19,14 @@ int main() {
             return 1;
         }
     }
-    std::cout << "All 8 status cases passed\n";
+    const auto since = "2026-10-06 12:00:01.123";
+    if (IsCurrentLine("[2026-10-06 12:00:01.122] [5131:Old] start download", since) ||
+        IsCurrentLine("[2000-01-01 00:00:00.000] [5131:Old] start download", since) ||
+        IsCurrentLine("[5131:No timestamp] start download", since) ||
+        !IsCurrentLine("[2026-10-06 12:00:01.123] [5131:New] start download", since) ||
+        !IsCurrentLine("[2026-10-07 00:00:00.000] [5131:New] start download", since)) {
+        std::cerr << "Event freshness is incorrect\n";
+        return 1;
+    }
+    std::cout << "All 8 status and 5 freshness cases passed\n";
 }

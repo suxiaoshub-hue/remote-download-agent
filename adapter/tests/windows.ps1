@@ -4,7 +4,7 @@ $Bin = (Resolve-Path $Bin).Path
 if (!(Test-Path (Join-Path $Bin 'PcstoryCommandTest.exe'))) { throw 'Direct-download command is not implemented yet' }
 $root = Join-Path $env:RUNNER_TEMP 'pcstory-command-tests'
 New-Item -ItemType Directory -Force $root | Out-Null
-foreach ($mode in @('started', 'accepted', 'failed', 'quiet', 'wrong-gid', 'timeout')) {
+foreach ($mode in @('rotation', 'started', 'accepted', 'failed', 'quiet', 'wrong-gid', 'timeout')) {
     $folder = Join-Path $root ($mode + '-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Force $folder | Out-Null
     $fixture = Start-Process (Join-Path $Bin 'PcstoryCommandFixture.exe') -ArgumentList @('"' + $folder + '"', $mode) -PassThru
@@ -33,5 +33,14 @@ foreach ($mode in @('started', 'accepted', 'failed', 'quiet', 'wrong-gid', 'time
     } finally {
         if (!$fixture.HasExited) { Stop-Process -Id $fixture.Id }
     }
+}
+$invalidReport = Join-Path $root 'invalid.txt'
+foreach ($invalidValue in @('0', 'abc', '8049')) {
+    Set-Content -Path $invalidReport -Value 'RESULT=STARTED Previous invocation'
+    & (Join-Path $Bin 'PcstoryAdapter.exe') --game-id $invalidValue --output $invalidReport
+    if ($LASTEXITCODE -ne 1) { throw 'Invalid input was accepted' }
+    $text = Get-Content $invalidReport -Raw
+    if ($text -notmatch 'RESULT=ERROR' -or $text -match 'STARTED') { throw 'Stale success survives invalid input' }
+    Write-Host "PASS invalid input $invalidValue replaces previous result"
 }
 $global:LASTEXITCODE = 0

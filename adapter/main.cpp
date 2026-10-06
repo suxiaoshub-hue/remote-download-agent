@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -165,6 +166,23 @@ struct Options {
     fs::path logFolder;
 };
 
+fs::path ReportPath(int argc, wchar_t** argv, const fs::path& ownFolder) {
+    for (int index = 1; index + 1 < argc; index += 2) {
+        if (std::wstring(argv[index]) == L"--output") return fs::absolute(argv[index + 1]);
+    }
+    return ownFolder / L"pcstory-download.txt";
+}
+
+std::string CurrentTimestamp() {
+    SYSTEMTIME time{};
+    GetLocalTime(&time);
+    char timestamp[32]{};
+    std::snprintf(timestamp, sizeof(timestamp), "%04u-%02u-%02u %02u:%02u:%02u.%03u",
+                  unsigned(time.wYear), unsigned(time.wMonth), unsigned(time.wDay),
+                  unsigned(time.wHour), unsigned(time.wMinute), unsigned(time.wSecond), unsigned(time.wMilliseconds));
+    return timestamp;
+}
+
 DWORD Number(const std::wstring& value, DWORD minimum, DWORD maximum) {
     if (value.empty() || value.find_first_not_of(L"0123456789") != std::wstring::npos)
         throw std::runtime_error("参数必须是十进制数字");
@@ -249,6 +267,7 @@ int Download(const Options& options, Reporter& report) {
         throw std::runtime_error("PCStory 已关闭或窗口发生变化，未发送命令");
     }
     report.Write("发送新增下载消息 0x468，force=0，使用 PCStory 默认磁盘配置");
+    const auto since = CurrentTimestamp();
     DWORD_PTR messageResult = 0;
     SetLastError(0);
     auto delivered = SendMessageTimeoutW(window, 0x468, options.gameId, reinterpret_cast<LPARAM>(remote),
@@ -266,6 +285,7 @@ int Download(const Options& options, Reporter& report) {
     const auto deadline = GetTickCount64() + static_cast<ULONGLONG>(options.waitSeconds) * 1000;
     do {
         for (const auto& line : logs.Read()) {
+            if (!IsCurrentLine(line, since)) continue;
             auto status = ClassifyLine(line, options.gameId);
             if (status == DownloadStatus::Pending) continue;
             report.Write("PCStory 新日志：" + line);
@@ -296,10 +316,10 @@ int wmain(int argc, wchar_t** argv) {
     SetConsoleOutputCP(CP_UTF8);
     try {
         auto ownFolder = OwnFolder();
-        auto options = Parse(argc, argv, ownFolder);
-        Reporter report(options.output);
+        Reporter report(ReportPath(argc, argv, ownFolder));
         report.Write("PCStory 直接下载测试 v0.1");
         try {
+            auto options = Parse(argc, argv, ownFolder);
             return Download(options, report);
         } catch (const std::exception& error) {
             report.Write(std::string("RESULT=ERROR ") + error.what());

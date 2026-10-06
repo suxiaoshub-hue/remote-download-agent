@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -20,16 +21,26 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM gameId, LPARAM par
         record << gameId << ' ' << unsigned(buffer[4]) << ' ' << unsigned(buffer[5])
                << ' ' << option << '\n';
         record.close();
+        if (mode == L"rotation") {
+            fs::rename(logPath, logPath.parent_path() / L"pcstory_archive.log");
+            return 0;
+        }
+        SYSTEMTIME time{};
+        GetLocalTime(&time);
+        char timestamp[32]{};
+        std::snprintf(timestamp, sizeof(timestamp), "[%04u-%02u-%02u %02u:%02u:%02u.%03u] ",
+                      unsigned(time.wYear), unsigned(time.wMonth), unsigned(time.wDay),
+                      unsigned(time.wHour), unsigned(time.wMinute), unsigned(time.wSecond), unsigned(time.wMilliseconds));
         std::ofstream log(logPath, std::ios::app);
         if (mode == L"failed") {
-            log << "donwdlg add task fail,gid=" << gameId << ",force=false\n";
+            log << timestamp << "donwdlg add task fail,gid=" << gameId << ",force=false\n";
         } else if (mode == L"accepted") {
-            log << "donwdlg add task ok,gid=" << gameId << ",force=false\n";
+            log << timestamp << "donwdlg add task ok,gid=" << gameId << ",force=false\n";
         } else if (mode == L"started") {
-            log << "donwdlg add task ok,gid=" << gameId << ",force=false\n";
-            log << '[' << gameId << ":Fixture] start download\n";
+            log << timestamp << "donwdlg add task ok,gid=" << gameId << ",force=false\n";
+            log << timestamp << '[' << gameId << ":Fixture] start download\n";
         } else if (mode == L"wrong-gid") {
-            log << '[' << gameId << "0:Fixture] start download\n";
+            log << timestamp << '[' << gameId << "0:Fixture] start download\n";
         }
         log.flush();
         return 0;
@@ -46,7 +57,7 @@ int wmain(int argc, wchar_t** argv) {
     fs::create_directories(folder / L"log");
     logPath = folder / L"log" / L"pcstory_fixture.log";
     recordPath = folder / L"parameters.txt";
-    std::ofstream(logPath) << "[5131:Old] start download\n";
+    std::ofstream(logPath) << "[2000-01-01 00:00:00.000] [5131:Old] start download\n";
     WNDCLASSW windowClass{};
     windowClass.lpfnWndProc = WindowProc;
     windowClass.hInstance = GetModuleHandleW(nullptr);
