@@ -14,6 +14,12 @@ cafes = {}
 tasks = {}
 inventories = {}
 DB_PATH = "remote_download.db"
+GAME_CATALOG = [
+    {"gameId": 8263, "name": "Dota2", "sizeBytes": 0},
+    {"gameId": 8044, "name": "CSGO", "sizeBytes": 0},
+    {"gameId": 8574, "name": "测试游戏", "sizeBytes": 0},
+    {"gameId": 5131, "name": "Roblox", "sizeBytes": 0},
+]
 
 def load_db():
     with sqlite3.connect(DB_PATH) as db:
@@ -52,7 +58,7 @@ def clean_inventory(data):
     for raw in data.get("games", []):
         game_id = int(raw["gameId"])
         status = str(raw.get("status", "unknown"))
-        if status not in ("installed", "missing", "downloading", "unknown"):
+        if status not in ("installed", "missing", "not_installed", "downloading", "unknown"):
             raise ValueError("invalid inventory game status")
         games[game_id] = {"gameId": game_id, "name": str(raw.get("name", game_id)), "status": status, "localPath": str(raw.get("localPath", "")), "localVersion": int(raw.get("localVersion", 0)), "serverVersion": int(raw.get("serverVersion", 0)), "sizeBytes": max(0, int(raw.get("sizeBytes", 0))), "updatedAt": now}
     disks = []
@@ -73,7 +79,7 @@ async function refresh() { const selectedCafe=document.querySelector('#cafe')?.v
 <p>游戏：${games.map(g=>`${g.gameId} ${g.name}`).join('，')}</p>`; const cafe=document.querySelector('#cafe'); const query=document.querySelector('#query'); if(selectedCafe && [...cafe.options].some(option=>option.value===selectedCafe)) cafe.value=selectedCafe; query.value=selectedQuery; await searchInventory(); }
 async function searchInventory() { const cafe=document.querySelector('#cafe'); const query=document.querySelector('#query'); if(!cafe||!query) return; const data=await api('/api/cafes/'+encodeURIComponent(cafe.value)+'/inventory?query='+encodeURIComponent(query.value)); document.querySelector('#inventory').innerHTML=`<p>磁盘：${data.disks.map(d=>`${d.path} 可用 ${formatBytes(d.freeBytes)} / ${formatBytes(d.totalBytes)}`).join('；')||'未上报'}</p><table border=1><tr><th>GID</th><th>名称</th><th>状态</th><th>本地路径</th><th>操作</th></tr>${data.games.map(g=>`<tr><td>${g.gameId}</td><td>${g.name}</td><td>${statusText(g.status)}</td><td>${g.localPath||''}</td><td>${g.status==='installed'?'已下载':`<button onclick="download('${cafe.value}',${g.gameId})">下发下载</button>`}</td></tr>`).join('')}</table>`; }
 function formatBytes(value) { const units=['B','KB','MB','GB','TB']; let n=value, i=0; while(n>=1024&&i<units.length-1){n/=1024;i++;} return n.toFixed(i?1:0)+' '+units[i]; }
-function statusText(value) { return {installed:'已下载',missing:'文件缺失',downloading:'下载中',unknown:'未知'}[value]||value; }
+function statusText(value) { return {installed:'已下载',missing:'文件缺失',not_installed:'未下载',downloading:'下载中',unknown:'未知'}[value]||value; }
 async function renameCafe(cafeId) { const name=prompt('输入新的网吧名称'); if(name) { await api('/api/cafes/'+cafeId+'/rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})}); refresh(); } }
 async function cancelTask(taskId) { await api('/api/tasks/'+taskId+'/cancel',{method:'POST'}); refresh(); }
 async function download(cafeId,gameId) { await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cafeId,gameId,downloader:'Pcstory',forceUpdate:false})}); refresh(); }
@@ -96,15 +102,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"cafes": list(cafes.values()), "tasks": list(tasks.values())})
             return
         if parsed.path == "/api/games":
-            self._json([{"gameId": 8263, "name": "Dota2"}, {"gameId": 8044, "name": "CSGO"}, {"gameId": 8574, "name": "测试游戏"}]); return
+            self._json(GAME_CATALOG); return
         if parsed.path.startswith("/api/cafes/") and parsed.path.endswith("/inventory"):
             cafe_id = parsed.path.split("/")[3]
             query = parse_qs(parsed.query).get("query", [""])[0].strip().lower()
             with lock:
                 inventory = inventories.get(cafe_id, {"cafeId": cafe_id, "games": {}, "disks": [], "updatedAt": 0})
-                games = list(inventory["games"].values())
+                games = list(inventory["games"].values()) if cafe_id in inventories else []
+                if cafe_id in inventories:
+                    games_by_id = {game["gameId"]: dict(game, status="not_installed") for game in GAME_CATALOG}
+                    games_by_id.update(inventory["games"])
+                    games = list(games_by_id.values())
                 if query: games = [game for game in games if query in str(game["gameId"]) or query in game["name"].lower()]
-                self._json({"cafeId": cafe_id, "games": sorted(games, key=lambda game: (game["name"], game["gameId"])), "disks": inventory["disks"], "updatedAt": inventory["updatedAt"]})
+                self._json({"cafeId": cafe_id, "reported": cafe_id in inventories, "games": sorted(games, key=lambda game: (game["name"], game["gameId"])), "disks": inventory["disks"], "updatedAt": inventory["updatedAt"]})
             return
         if parsed.path.startswith("/api/tasks/next/"):
             cafe_id = parsed.path.rsplit("/", 1)[-1]

@@ -29,6 +29,8 @@ assert found["games"][0]["status"] == "installed"
 assert found["disks"][0]["freeBytes"] == 9000
 missing = call("/api/cafes/test-cafe/inventory?query=csgo")
 assert missing["games"][0]["status"] == "missing"
+not_downloaded = call("/api/cafes/test-cafe/inventory?query=dota")
+assert not_downloaded["games"][0]["status"] == "not_installed"
 try:
     call("/api/agents/inventory", "POST", {"cafeId":"test-cafe", "games":[{"gameId":1,"status":"bad"}], "disks":[]})
     raise AssertionError("invalid inventory was accepted")
