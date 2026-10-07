@@ -119,6 +119,35 @@ class IntegrationTests(unittest.TestCase):
         server.load_db()
         self.assertEqual(server.inventories[cafe['id']]['games'][5131]['name'], 'Roblox')
 
+    def test_task_telemetry_calculates_eta_from_fresh_real_sample(self):
+        cafe = self.provision()
+        self.report(cafe)
+        task = self.call('/api/tasks', 'POST', {'cafeId': cafe['id'], 'gameId': 5131}, expected=201)
+        self.call('/api/tasks/next/' + cafe['id'], token=cafe['agentToken'])
+        self.call('/api/tasks/' + task['id'] + '/status', 'POST', {'status': 'accepted'}, token=cafe['agentToken'])
+        result = self.call('/api/tasks/' + task['id'] + '/telemetry', 'POST', {
+            'downloadedBytes': 2000, 'totalBytes': 5000, 'speedBytesPerSecond': 1000,
+            'sampledAt': time.time(), 'source': 'filesystem'
+        }, token=cafe['agentToken'])
+        self.assertEqual(result['etaSeconds'], 3)
+        self.assertEqual(result['progress'], 0.4)
+        self.assertEqual(self.call('/api/state')['tasks'][0]['speedBytesPerSecond'], 1000)
+
+    def test_task_telemetry_rejects_fake_or_stale_sample(self):
+        cafe = self.provision()
+        self.report(cafe)
+        task = self.call('/api/tasks', 'POST', {'cafeId': cafe['id'], 'gameId': 5131}, expected=201)
+        self.call('/api/tasks/next/' + cafe['id'], token=cafe['agentToken'])
+        self.call('/api/tasks/' + task['id'] + '/status', 'POST', {'status': 'accepted'}, token=cafe['agentToken'])
+        self.call('/api/tasks/' + task['id'] + '/telemetry', 'POST', {
+            'downloadedBytes': 6000, 'totalBytes': 5000, 'speedBytesPerSecond': 1000,
+            'sampledAt': time.time(), 'source': 'guess'
+        }, token=cafe['agentToken'], expected=400)
+        self.call('/api/tasks/' + task['id'] + '/telemetry', 'POST', {
+            'downloadedBytes': 2000, 'totalBytes': 5000, 'speedBytesPerSecond': 1000,
+            'sampledAt': time.time() - 600, 'source': 'filesystem'
+        }, token=cafe['agentToken'], expected=400)
+
     def test_unknown_and_stale_inventory_cannot_start_download(self):
         cafe = self.provision()
         self.call('/api/tasks', 'POST', {'cafeId': cafe['id'], 'gameId': 5131}, expected=409)

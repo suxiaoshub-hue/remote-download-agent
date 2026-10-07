@@ -11,6 +11,38 @@ import urllib.request
 import inventory
 
 
+def filesystem_bytes(path):
+    """Return bytes currently present at an existing download path.
+
+    PCStory can keep a path template until the first file is created. In that
+    case there is no defensible progress sample yet, so return None.
+    """
+    if not path:
+        return None
+    if '*' in path or '?' in path:
+        path = path[:min(index for index in (path.find('*'), path.find('?')) if index >= 0)].rstrip('\\/')
+    if '%' in path:
+        return None
+    if os.path.isfile(path):
+        try:
+            return os.path.getsize(path)
+        except OSError:
+            return None
+    if not os.path.isdir(path):
+        return None
+    total = 0
+    try:
+        for root, _, names in os.walk(path):
+            for name in names:
+                try:
+                    total += os.path.getsize(os.path.join(root, name))
+                except OSError:
+                    continue
+    except OSError:
+        return None
+    return total
+
+
 def request(url, method='GET', payload=None, token=''):
     body = json.dumps(payload).encode('utf-8') if payload is not None else None
     headers = {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token}
@@ -108,6 +140,9 @@ def main():
     adapter = PcstoryAdapter(args.adapter)
     registered = False
     last_inventory = 0
+    latest_inventory = None
+    telemetry = None
+    last_telemetry = 0
     journal = TaskJournal()
     if journal.record and journal.record['task']['cafeId'] != args.cafe_id:
         raise ValueError('agent-task.json 属于其他网吧，请恢复原配置处理此任务')
@@ -125,13 +160,47 @@ def main():
             result = adapter.poll()
             if result:
                 journal.save({'task': adapter.task, 'phase': 'result', 'status': result})
+                if result in ('downloading', 'waiting'):
+                    game = (latest_inventory or {}).get('games', [])
+                    game = next((item for item in game if item.get('gameId') == adapter.task.get('gameId')), {})
+                    path = game.get('localPath', '')
+                    telemetry = {'task': adapter.task, 'baseline': filesystem_bytes(path),
+                                 'previous': None, 'path': path}
             if journal.record and journal.record['phase'] == 'result':
                 api('/api/tasks/' + journal.record['task']['id'] + '/status', 'POST', {'status': journal.record['status']})
                 journal.clear()
+            if telemetry and time.time() - last_telemetry >= 5:
+                task = telemetry['task']
+                game = next((item for item in (latest_inventory or {}).get('games', [])
+                             if item.get('gameId') == task.get('gameId')), {})
+                if game.get('status') == 'installed':
+                    telemetry = None
+                else:
+                    current = filesystem_bytes(telemetry['path'])
+                    total = int(task.get('sizeBytes') or task.get('totalBytes') or game.get('sizeBytes') or 0)
+                    if current is not None and telemetry['baseline'] is not None and total > 0:
+                        downloaded = max(0, current - telemetry['baseline'])
+                        now = time.time()
+                        previous = telemetry['previous']
+                        speed = 0.0
+                        if previous:
+                            elapsed = now - previous[0]
+                            if elapsed > 0:
+                                speed = max(0.0, (downloaded - previous[1]) / elapsed)
+                        try:
+                            api('/api/tasks/' + task['id'] + '/telemetry', 'POST', {
+                                'downloadedBytes': min(downloaded, total), 'totalBytes': total,
+                                'speedBytesPerSecond': speed, 'sampledAt': now, 'source': 'filesystem'
+                            })
+                            telemetry['previous'] = (now, downloaded)
+                        except Exception as error:
+                            print('进度上报失败，等待下一次真实样本：', error)
+                last_telemetry = time.time()
             if time.time() - last_inventory >= max(10, args.inventory_interval):
                 try:
                     folder = args.pcstory_folder or inventory.locate_folder()
                     current = inventory.snapshot(folder)
+                    latest_inventory = current
                     api('/api/agents/inventory', 'POST', dict(current, cafeId=args.cafe_id))
                     print('清单上报：%d 个游戏，%d 个下载磁盘' % (len(current['games']), len(current['disks'])))
                 except Exception as error:

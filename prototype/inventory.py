@@ -11,6 +11,24 @@ import tempfile
 EXPECTED_HASH = '05b9927164f7b3a842f48ffc3bcfd464ae4052e2cdeec4f54902925f2178cdb6'
 
 
+def decode_pcstory_path(path):
+    if not path:
+        return ''
+    try:
+        decoded = base64.b64decode(path, validate=True).decode('utf-8')
+    except (ValueError, UnicodeDecodeError):
+        return path
+    if ':\\' in decoded or decoded.startswith('\\\\') or '/' in decoded:
+        return decoded
+    return path
+
+
+def probe_path(path):
+    decoded = decode_pcstory_path(path)
+    wildcard = min((index for index in (decoded.find('*'), decoded.find('?')) if index >= 0), default=-1)
+    return decoded[:wildcard].rstrip('\\/') if wildcard >= 0 else decoded
+
+
 def stream_xor(key, nonce, counter, content):
     words = [0x61707865, 0x3320646e, 0x79622d32, 0x6b206574]
     words += list(struct.unpack('<8I', key)) + [counter] + list(struct.unpack('<3I', nonce[:12]))
@@ -67,7 +85,7 @@ def game_status(raw_status, path):
     if raw_status == 0 and not path:
         return 'not_installed'
     if raw_status == 1 and path:
-        return 'installed' if os.path.isdir(path) else 'missing'
+        return 'installed' if os.path.isdir(probe_path(path)) else 'missing'
     return 'unknown'
 
 
@@ -148,7 +166,7 @@ def snapshot(folder):
         os.unlink(temporary)
     games = []
     for game_id, name, raw_status, local_path, local_version, server_version, size in rows:
-        path_value = local_path or ''
+        path_value = decode_pcstory_path(local_path or '')
         games.append({'gameId': game_id, 'name': name, 'status': game_status(raw_status, path_value),
                       'rawStatus': raw_status, 'localPath': path_value, 'localVersion': local_version or 0,
                       'serverVersion': server_version or 0, 'sizeBytes': max(0, (size or 0) * 1024)})

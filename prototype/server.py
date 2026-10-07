@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+import math
 import os
 import secrets
 import sqlite3
@@ -216,6 +217,40 @@ class Handler(BaseHTTPRequestHandler):
                 save_db()
                 self.send_json(task)
                 return
+            if parts[:2] == ['api', 'tasks'] and len(parts) == 4 and parts[-1] == 'telemetry' and method == 'POST':
+                task = tasks.get(parts[2])
+                if not task:
+                    raise ApiError('任务不存在', 404)
+                self.authorize(task['cafeId'])
+                if task['status'] not in ('accepted', 'waiting', 'downloading', 'uncertain'):
+                    raise ApiError('任务当前不接受进度上报', 409)
+                try:
+                    downloaded = int(data['downloadedBytes'])
+                    total = int(data['totalBytes'])
+                    speed = float(data['speedBytesPerSecond'])
+                    sampled_at = float(data['sampledAt'])
+                except (KeyError, TypeError, ValueError, OverflowError) as error:
+                    raise ApiError('进度样本字段不合法') from error
+                source = str(data.get('source', ''))
+                now = time.time()
+                if source not in ('filesystem', 'pcstory-log'):
+                    raise ApiError('进度样本来源未经验证')
+                if total <= 0 or downloaded < 0 or downloaded > total or speed < 0 or not math.isfinite(speed):
+                    raise ApiError('进度样本数值不合法')
+                if abs(now - sampled_at) > 120:
+                    raise ApiError('进度样本已过期')
+                expected_total = int(task.get('totalBytes', 0) or 0)
+                if expected_total and total != expected_total:
+                    raise ApiError('进度总量与库存记录不一致')
+                remaining = total - downloaded
+                eta = math.ceil(remaining / speed) if speed > 0 and remaining > 0 else None
+                task.update(downloadedBytes=downloaded, totalBytes=total,
+                            progress=downloaded / total, speedBytesPerSecond=speed,
+                            etaSeconds=eta, telemetryUpdatedAt=sampled_at,
+                            telemetrySource=source, updatedAt=now)
+                save_db()
+                self.send_json(task)
+                return
             self.authorize()
             if parsed.path == '/api/state' and method == 'GET':
                 self.send_json({'cafes': [public_cafe(cafe) for cafe in cafes.values()], 'tasks': list(tasks.values())})
@@ -264,7 +299,11 @@ class Handler(BaseHTTPRequestHandler):
                 if game['sizeBytes'] and max(disk['freeBytes'] for disk in disks) < game['sizeBytes']:
                     raise ApiError('PCStory 下载盘剩余容量不足', 409)
                 task = {'id': uuid.uuid4().hex, 'cafeId': cafe_id, 'gameId': game_id, 'name': game['name'],
-                        'status': 'queued', 'progress': None, 'updatedAt': time.time()}
+                        'status': 'queued', 'progress': None, 'downloadedBytes': None,
+                        'totalBytes': int(game.get('sizeBytes', 0) or 0),
+                        'speedBytesPerSecond': None, 'etaSeconds': None,
+                        'telemetryUpdatedAt': None, 'telemetrySource': None,
+                        'updatedAt': time.time()}
                 tasks[task['id']] = task
                 save_db()
                 self.send_json(task, 201)

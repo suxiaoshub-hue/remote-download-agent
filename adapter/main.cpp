@@ -32,6 +32,32 @@ std::string Utf8(const std::wstring& text) {
     return result;
 }
 
+std::wstring WideUtf8(const std::string& text) {
+    if (text.empty()) return {};
+    int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0);
+    if (!size) {
+        size = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+        if (!size) return L"[输出编码错误]";
+    }
+    std::wstring result(static_cast<std::size_t>(size), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), result.data(), size);
+    return result;
+}
+
+void ConsoleWriteUtf8(DWORD standardHandle, const std::string& message, bool flush = true) {
+    HANDLE handle = GetStdHandle(standardHandle);
+    DWORD mode = 0;
+    if (handle && handle != INVALID_HANDLE_VALUE && GetConsoleMode(handle, &mode)) {
+        const auto wide = WideUtf8(message);
+        DWORD written = 0;
+        WriteConsoleW(handle, wide.data(), static_cast<DWORD>(wide.size()), &written, nullptr);
+    } else {
+        std::ostream& stream = standardHandle == STD_ERROR_HANDLE ? std::cerr : std::cout;
+        stream << message;
+        if (flush) stream.flush();
+    }
+}
+
 std::wstring ParentPath(const std::wstring& path) {
     const auto separator = path.find_last_of(L"\\/");
     if (separator == std::wstring::npos) return {};
@@ -72,9 +98,9 @@ struct Reporter {
         file << "\xef\xbb\xbf";
     }
     void Write(const std::string& message) {
-        std::cout << message << std::endl;
         file << message << "\r\n";
         file.flush();
+        ConsoleWriteUtf8(STD_OUTPUT_HANDLE, message + "\r\n");
     }
 };
 
@@ -257,7 +283,7 @@ Options Parse(int argc, wchar_t** argv, const std::wstring& ownFolder) {
         else throw std::runtime_error("未知参数：" + Utf8(key));
     }
     if (!options.gameId) {
-        std::cout << "请输入需要下载的游戏 GID（Roblox 为 5131）：" << std::flush;
+        ConsoleWriteUtf8(STD_OUTPUT_HANDLE, "请输入需要下载的游戏 GID（Roblox 为 5131）：");
         std::string input;
         std::getline(std::cin, input);
         options.gameId = Number(std::wstring(input.begin(), input.end()), 1, 2147483647);
@@ -372,7 +398,7 @@ int wmain(int argc, wchar_t** argv) {
             return 1;
         }
     } catch (const std::exception& error) {
-        std::cerr << error.what() << '\n';
+        ConsoleWriteUtf8(STD_ERROR_HANDLE, std::string(error.what()) + "\r\n");
         return 1;
     }
 }

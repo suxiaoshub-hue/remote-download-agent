@@ -1,4 +1,5 @@
 import hashlib
+import base64
 import os
 import tempfile
 import unittest
@@ -41,6 +42,13 @@ class LiveTests(unittest.TestCase):
             self.assertEqual(inventory.game_status(1, folder + '-missing'), 'missing')
             self.assertEqual(inventory.game_status(0, ''), 'not_installed')
 
+    def test_pcstory_base64_path_template_is_decoded_for_local_probe(self):
+        with tempfile.TemporaryDirectory() as folder:
+            encoded = base64.b64encode((folder + os.sep + '*.*').encode()).decode()
+            self.assertEqual(inventory.decode_pcstory_path(encoded), folder + os.sep + '*.*')
+            with patch('inventory.os.path.isdir', return_value=True):
+                self.assertEqual(inventory.game_status(1, inventory.decode_pcstory_path(encoded)), 'installed')
+
     def test_actual_pcstory_disk_setting(self):
         with tempfile.TemporaryDirectory() as folder:
             with open(os.path.join(folder, 'config.ini'), 'w') as file:
@@ -57,6 +65,14 @@ class LiveTests(unittest.TestCase):
         self.assertEqual(adapter.result_status(2), 'waiting')
         self.assertEqual(adapter.result_status(3), 'failed')
         self.assertEqual(adapter.result_status(5), 'uncertain')
+
+    def test_filesystem_sample_uses_only_an_existing_path(self):
+        from agent import filesystem_bytes
+        with tempfile.TemporaryDirectory() as folder:
+            with open(os.path.join(folder, 'part.bin'), 'wb') as file:
+                file.write(b'x' * 17)
+            self.assertEqual(filesystem_bytes(folder), 17)
+            self.assertEqual(filesystem_bytes(os.path.join(folder, 'missing')), None)
 
 
 if __name__ == '__main__':
