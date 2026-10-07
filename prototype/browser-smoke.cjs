@@ -87,7 +87,7 @@ let browser;
   await api('/api/tasks/'+task.id+'/status',{status:'accepted'},config.agentToken);
   await api('/api/tasks/'+task.id+'/telemetry',{downloadedBytes:524288,totalBytes:1048576,speedBytesPerSecond:131072,sampledAt:Date.now()/1000,source:'filesystem'},config.agentToken);
   await page.evaluate(()=>refreshState());
-  await page.waitForFunction(()=>document.querySelector('#tasks').textContent.includes('预计剩余 4秒'));
+  await page.waitForFunction(()=>document.querySelector('#tasks').textContent.includes('进度：50%')&&document.querySelector('#tasks').textContent.includes('剩余时间：4秒'));
   page.once('dialog',dialog=>dialog.accept('更名后的网吧'));
   await page.locator('#rename').click();
   await page.waitForFunction(()=>document.querySelector('#detail-name').textContent==='更名后的网吧');
