@@ -41,6 +41,9 @@ def main():
             assert '网吧远程下载'.encode() in response.read()
         cafe = request('/api/cafes', {'name': 'Linux 容器网吧', 'server': 'https://test.example.com'})
         command('restart', container)
+        restarted_port = command('port', container, '8765/tcp').rsplit(':', 1)[1]
+        print('Published port before/after restart:', port, restarted_port)
+        base = 'http://127.0.0.1:' + restarted_port
         state = ready()
         assert state['cafes'][0]['id'] == cafe['id']
         assert state['cafes'][0]['name'] == 'Linux 容器网吧'
