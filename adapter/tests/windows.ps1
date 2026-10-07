@@ -26,6 +26,7 @@ foreach ($mode in @('rotation', 'started', 'accepted', 'failed', 'quiet', 'wrong
         if ($fixture.HasExited) { throw "Target crashed: $mode" }
         if ($mode -eq 'started') {
             if ((Get-Content $result -Raw) -notmatch 'STARTED') { throw 'Start evidence missing' }
+            if ((Get-Content $result -Raw) -notmatch 'Dota2国际服') { throw 'GBK PCStory log was not converted to UTF-8' }
         }
         & (Join-Path $Bin 'PcstoryAdapter.exe') --game-id 5131 --pid $fixture.Id --output (Join-Path $folder 'rejected.txt')
         if ($LASTEXITCODE -ne 1) { throw 'Production build accepted fixture' }

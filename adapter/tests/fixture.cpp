@@ -39,6 +39,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM gameId, LPARAM par
         } else if (mode == L"started") {
             log << timestamp << "donwdlg add task ok,gid=" << gameId << ",force=false\n";
             log << timestamp << '[' << gameId << ":Fixture] start download\n";
+            log << timestamp << '[' << gameId << ":Dota2\xB9\xFA\xBC\xCA\xB7\xFE]:: start download\n";
         } else if (mode == L"wrong-gid") {
             log << timestamp << '[' << gameId << "0:Fixture] start download\n";
         }

@@ -44,6 +44,16 @@ std::wstring WideUtf8(const std::string& text) {
     return result;
 }
 
+std::string LogUtf8(const std::string& text) {
+    if (text.empty()) return {};
+    int size = MultiByteToWideChar(936, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0);
+    if (!size) return text;
+    std::wstring wide(static_cast<std::size_t>(size), L'\0');
+    if (!MultiByteToWideChar(936, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), wide.data(), size))
+        return text;
+    return Utf8(wide);
+}
+
 void ConsoleWriteUtf8(DWORD standardHandle, const std::string& message, bool flush = true) {
     HANDLE handle = GetStdHandle(standardHandle);
     DWORD mode = 0;
@@ -360,7 +370,7 @@ int Download(const Options& options, Reporter& report) {
             if (!IsCurrentLine(line, since)) continue;
             auto status = ClassifyLine(line, options.gameId);
             if (status == DownloadStatus::Pending) continue;
-            report.Write("PCStory 新日志：" + line);
+            report.Write("PCStory 新日志：" + LogUtf8(line));
             if (status == DownloadStatus::Started) {
                 report.Write("RESULT=STARTED PCStory 已记录此游戏开始下载，请核对下载列表和下载速度；这不代表下载完成。");
                 return 0;
