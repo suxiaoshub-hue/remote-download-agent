@@ -1,6 +1,10 @@
 import ctypes
+import json
+from pathlib import Path
 import subprocess
 import sys
+import tempfile
+import traceback
 from ctypes import wintypes
 
 from runtime import configure_console, WindowsConsoleOutput
@@ -30,9 +34,20 @@ def check_console(code_page):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) == 2:
-        check_console(int(sys.argv[1]))
+    if len(sys.argv) == 3:
+        try:
+            check_console(int(sys.argv[1]))
+            Path(sys.argv[2]).write_text(json.dumps({'ok': True}), encoding='utf-8')
+        except Exception:
+            Path(sys.argv[2]).write_text(json.dumps({'ok': False, 'traceback': traceback.format_exc(), 'stdoutType': type(sys.stdout).__name__, 'isatty': sys.stdout.isatty()}), encoding='utf-8')
+            sys.exit(1)
     else:
-        for code_page in (936, 65001):
-            subprocess.run([sys.executable, __file__, str(code_page)], creationflags=subprocess.CREATE_NEW_CONSOLE, timeout=15, check=True)
+        with tempfile.TemporaryDirectory() as folder:
+            for code_page in (936, 65001):
+                report = Path(folder) / ('console-' + str(code_page) + '.json')
+                child = subprocess.run([sys.executable, __file__, str(code_page), str(report)], creationflags=subprocess.CREATE_NEW_CONSOLE, timeout=15)
+                if report.exists():
+                    print(report.read_text(encoding='utf-8'))
+                if child.returncode:
+                    raise RuntimeError('Console check failed for code page ' + str(code_page))
         print('PASS actual Windows console Chinese Unicode output under CP936 and UTF-8')
