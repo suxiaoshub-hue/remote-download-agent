@@ -8,8 +8,8 @@
 4. 点击“添加网吧”，填网吧名称，服务器地址用 http://127.0.0.1:8765。
 5. 网页会下载 agent-config.json；把这个文件放到 Agent.exe 同目录。
 6. 打开 PCStory，再以相同管理员权限运行 Start-Agent.cmd。
-7. 等待约 30 秒，在网页选网吧、搜索游戏、查看游戏状态和 PCStory 下载盘剩余容量。
-8. 点击未下载游戏的“下载”，检查 PCStory 是否真实新增并开始下载。
+7. 等待约 30 秒，首页点击对应网吧进入二级页，搜索游戏、查看是否已下载和 PCStory 下载盘剩余容量。不搜索时不显示全部游戏。
+8. 点击未下载游戏的“下发下载”，检查 PCStory 是否真实新增并开始下载。
 
 配置 pcstoryFolder 留空会自动定位 PCStory。如果定位失败，填写 PCStory 所在文件夹，例如 D:\pcstory5.0。JSON 中反斜杠写成双反斜杠：D:\\pcstory5.0。
 
@@ -26,5 +26,8 @@
 
 故障查看 agent.log、server.log、pcstory-task-任务编号.txt，网页也会显示库存错误。
 CMD 窗口会保留启动错误，便于查看。
+启动 CMD 和 EXE 统一使用 UTF-8，中文不再按旧代码页输出。
+独立心跳每 5 秒发送，清单读取不再阻塞心跳；超过 75 秒未收到连接才显示离线。
+Linux 云端部署包提供 Docker + HTTPS 配置，Linux 不安装 PCStory，只运行网页服务端。
 每家网吧须从网页单独添加并下载配置，不要多台机器使用同一份凭证。
 请保留 server-config.json、remote_download.db、agent-config.json，里面的凭证不要发到公开仓库。

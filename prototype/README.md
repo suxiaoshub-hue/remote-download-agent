@@ -10,12 +10,12 @@
 2. 浏览器打开 http://127.0.0.1:8765，使用 server-config.json 中的 adminToken 登录。
 3. 点击“添加网吧”，服务器地址填写 http://127.0.0.1:8765，网页自动下载 agent-config.json。
 4. 将该配置放在 Agent.exe 同目录，打开 PCStory。以和 PCStory 相同的管理员权限双击 Start-Agent.cmd。
-5. 等待约 30 秒，网页选择网吧并搜索游戏，检查状态与下载盘容量。对未下载的游戏点击“下载”，确认 PCStory 实际新增并开始任务。
+5. 等待约 30 秒，在首页点击对应网吧进入二级页，输入游戏名称或 GID 搜索，查看状态与下载盘容量。对未下载的游戏点击“下发下载”，确认 PCStory 实际新增并开始任务。未输入搜索词时不展示完整游戏清单。
 6. PCStory 标记游戏为本地已下载且目录存在后，下一次清单上报会更新云端任务。
 
 无需手工导出 games.json。清单无法读取时网页显示具体原因，Agent 保留旧结果并禁止下发。可选 pcstoryFolder 是包含 pcstory.exe、pcstory.dat、config.ini 的目录；留空自动寻找正在运行的 PCStory。
 
-本地日志为 agent.log、server.log、pcstory-task-任务编号.txt。不要使用旧版 Agent 配置，也不要把同一配置同时用于两台网吧机器。连接密钥只在添加网吧时提供，妥善保管配置。
+本地日志为 agent.log、server.log、pcstory-task-任务编号.txt。中文输出和 CMD 使用 UTF-8。保持 Agent 窗口运行，不要点击终端进入文本选择模式（旧 Windows 的快速编辑会暂停控制台输出）；睡眠或断网仍会真实离线。心跳独立于清单采集，短暂读取延迟不再导致错误离线。不要把同一配置同时用于两台网吧机器。连接密钥只在添加网吧时提供，妥善保管配置。
 
 ## 云服务器部署
 

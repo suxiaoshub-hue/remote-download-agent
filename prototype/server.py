@@ -17,6 +17,7 @@ cafes, tasks, inventories, catalog = {}, {}, {}, {}
 DB_PATH = 'remote_download.db'
 ADMIN_TOKEN = ''
 FRESH_SECONDS = 120
+ONLINE_SECONDS = 75
 GAME_STATUSES = {'installed', 'not_installed', 'missing', 'pending', 'unknown'}
 
 
@@ -46,7 +47,7 @@ def load_db():
 
 
 def online(cafe):
-    return time.time() - cafe.get('lastSeen', 0) < 20
+    return time.time() - cafe.get('lastSeen', 0) < ONLINE_SECONDS
 
 
 def fresh(cafe_id):
@@ -167,7 +168,8 @@ class Handler(BaseHTTPRequestHandler):
                     cafe['error'] = str(data.get('error', ''))[:1000]
                 elif action not in ('register', 'heartbeat'):
                     raise ApiError('接口不存在', 404)
-                save_db()
+                if action != 'heartbeat':
+                    save_db()
                 self.send_json({'ok': True, 'cafeId': cafe_id})
                 return
             if parts[:3] == ['api', 'tasks', 'next'] and method == 'GET' and len(parts) == 4:
@@ -234,6 +236,10 @@ class Handler(BaseHTTPRequestHandler):
                     raise ApiError('网吧不存在', 404)
                 if parts[-1] == 'inventory' and method == 'GET':
                     self.send_json(inventory_view(cafe_id, parse_qs(parsed.query).get('query', [''])[0]))
+                elif parts[-1] == 'overview' and method == 'GET':
+                    current = inventories.get(cafe_id, {})
+                    self.send_json({'cafeId': cafe_id, 'reported': bool(current), 'fresh': fresh(cafe_id),
+                                    'updatedAt': current.get('updatedAt', 0), 'disks': current.get('disks', [])})
                 elif parts[-1] == 'rename' and method == 'POST':
                     name = str(data['name']).strip()[:100]
                     if not name:

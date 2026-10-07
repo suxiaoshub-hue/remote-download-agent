@@ -6,7 +6,7 @@
 
 Agent：POST /api/agents/register、heartbeat、inventory、error，均带 cafeId；GET /api/tasks/next/{cafeId}；POST /api/tasks/{id}/status。
 
-inventory 包含 complete、games 和 disks。游戏字段 gameId、name、status、localPath、sizeBytes、localVersion、serverVersion。状态 installed/not_installed/missing/pending/unknown。磁盘字段 path/freeBytes/totalBytes/downloadDisk。服务端赋更新时间；心跳超过 20 秒、库存超过 120 秒或读取报错即禁止下载。
+inventory 包含 complete、games 和 disks。游戏字段 gameId、name、status、localPath、sizeBytes、localVersion、serverVersion。状态 installed/not_installed/missing/pending/unknown。磁盘字段 path/freeBytes/totalBytes/downloadDisk。服务端赋更新时间；心跳超过 75 秒、库存超过 120 秒或读取报错即禁止下载。独立心跳每 5 秒发送，不被清单读取阻塞。GET /api/cafes/{id}/overview 只返回清单更新时间、有效性和磁盘容量，不传全部游戏。
 
 领取任务：queued → delivering，同一未确认任务可重新领取；Agent 写入本地 prepared 记录后确认 accepted，写 executing 后才调用原生程序。结果存储后重试上传。Agent 重启遇到 executing 改为 uncertain，避免重复执行。后续真实库存的 installed 记录可确认 completed。相同状态上传幂等。
 

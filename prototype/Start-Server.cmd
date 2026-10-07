@@ -1,5 +1,6 @@
 @echo off
 cd /d "%~dp0"
+chcp 65001 >nul
 echo Web: http://127.0.0.1:8765
 echo Login key: adminToken in server-config.json
 echo Startup errors: server.log

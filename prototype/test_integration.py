@@ -70,6 +70,14 @@ class IntegrationTests(unittest.TestCase):
             self.assertEqual(response.status, 200)
             self.assertIn('网吧远程下载'.encode(), response.read())
 
+    def test_cafe_overview_returns_disk_without_full_game_list(self):
+        cafe = self.provision()
+        self.report(cafe)
+        overview = self.call('/api/cafes/' + cafe['id'] + '/overview')
+        self.assertTrue(overview['fresh'])
+        self.assertEqual(overview['disks'][0]['freeBytes'], 9000)
+        self.assertNotIn('games', overview)
+
     def test_new_inventory_completes_started_task_after_agent_restart(self):
         cafe = self.provision()
         self.report(cafe)

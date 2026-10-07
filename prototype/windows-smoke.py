@@ -16,6 +16,8 @@ def main():
         folder = Path(temporary)
         for name in ('Server.exe', 'Agent.exe'):
             shutil.copy(root / name, folder / name)
+        assert 'chcp 65001' in Path('prototype/Start-Agent.cmd').read_text()
+        assert 'chcp 65001' in Path('prototype/Start-Server.cmd').read_text()
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0))
             port = sock.getsockname()[1]

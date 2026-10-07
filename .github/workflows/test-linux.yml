@@ -1,0 +1,40 @@
+name: Test Linux Server
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'prototype/**'
+      - 'deploy/**'
+      - '.github/workflows/test-linux.yml'
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test API and Agent logic on Linux
+        run: |
+          python -m pip install cryptography==42.0.8
+          python -m unittest discover -s prototype -p 'test*.py'
+      - name: Validate deployment and build container
+        run: |
+          DOWNLOAD_DOMAIN=test.example.com docker compose -f deploy/compose.yaml config --quiet
+          docker build -f deploy/Dockerfile -t remote-download-server:test .
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify browser search and background refresh
+        run: |
+          npm install --prefix /tmp/browser-test playwright
+          /tmp/browser-test/node_modules/.bin/playwright install --with-deps chromium
+          NODE_PATH=/tmp/browser-test/node_modules node prototype/browser-smoke.cjs
+      - name: Start container and verify persistence
+        run: python deploy/test-container.py
+      - name: Package Linux server
+        run: zip -r remote-download-server-linux.zip prototype/server.py prototype/runtime.py prototype/web.html deploy prototype/README.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: remote-download-server-linux
+          path: remote-download-server-linux.zip

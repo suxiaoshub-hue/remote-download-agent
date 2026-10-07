@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import subprocess
+import threading
 import time
 import urllib.parse
 import urllib.error
@@ -68,6 +69,30 @@ class TaskJournal:
         self.record = None
 
 
+class Heartbeat:
+    def __init__(self, api, cafe_id, interval=5):
+        self.api = api
+        self.cafe_id = cafe_id
+        self.interval = interval
+        self.stopped = threading.Event()
+        self.thread = threading.Thread(target=self.run, name='agent-heartbeat', daemon=True)
+
+    def run(self):
+        while not self.stopped.is_set():
+            try:
+                self.api('/api/agents/heartbeat', 'POST', {'cafeId': self.cafe_id})
+            except Exception:
+                pass
+            self.stopped.wait(self.interval)
+
+    def start(self):
+        self.thread.start()
+
+    def stop(self):
+        self.stopped.set()
+        self.thread.join(timeout=16)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--cafe-id', required=True)
@@ -90,12 +115,13 @@ def main():
     def api(path, method='GET', payload=None):
         return request(base + path, method, payload, args.agent_token)
 
+    heartbeat = Heartbeat(api, args.cafe_id)
+    heartbeat.start()
     while True:
         try:
             if not registered:
                 api('/api/agents/register', 'POST', {'cafeId': args.cafe_id, 'name': args.name})
                 registered = True
-            api('/api/agents/heartbeat', 'POST', {'cafeId': args.cafe_id})
             result = adapter.poll()
             if result:
                 journal.save({'task': adapter.task, 'phase': 'result', 'status': result})
