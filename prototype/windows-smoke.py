@@ -49,7 +49,7 @@ def main():
             config = created['config']
             config['pcstoryFolder'] = str(folder / 'no-pcstory')
             (folder / 'agent-config.json').write_text(json.dumps(config), encoding='utf-8')
-            agent = subprocess.Popen([str(folder / 'Agent.exe')], cwd=folder)
+            agent = subprocess.Popen([str(folder / 'Agent.exe')], cwd=folder, creationflags=subprocess.CREATE_NEW_CONSOLE)
             deadline = time.time() + 60
             while True:
                 cafe = request('/api/state')['cafes'][0]
@@ -58,7 +58,7 @@ def main():
                 if agent.poll() is not None or time.time() > deadline:
                     raise RuntimeError('Packaged Agent did not report heartbeat/inventory error')
                 time.sleep(.25)
-            assert (folder / 'agent.log').exists()
+            assert 'Agent 启动' in (folder / 'agent.log').read_text(encoding='utf-8')
             assert 'tokenHash' not in cafe and 'agentToken' not in cafe
             print('PASS frozen Server webpage, auth, config, Agent heartbeat, inventory errors and local log')
         finally:

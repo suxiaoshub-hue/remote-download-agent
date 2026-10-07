@@ -15,7 +15,7 @@
 
 无需手工导出 games.json。清单无法读取时网页显示具体原因，Agent 保留旧结果并禁止下发。可选 pcstoryFolder 是包含 pcstory.exe、pcstory.dat、config.ini 的目录；留空自动寻找正在运行的 PCStory。
 
-本地日志为 agent.log、server.log、pcstory-task-任务编号.txt。中文输出和 CMD 使用 UTF-8。保持 Agent 窗口运行，不要点击终端进入文本选择模式（旧 Windows 的快速编辑会暂停控制台输出）；睡眠或断网仍会真实离线。心跳独立于清单采集，短暂读取延迟不再导致错误离线。不要把同一配置同时用于两台网吧机器。连接密钥只在添加网吧时提供，妥善保管配置。
+本地日志为 agent.log、server.log、pcstory-task-任务编号.txt。日志和重定向输出使用 UTF-8，Windows 控制台直接通过 WriteConsoleW 显示中文。控制台不可写时仍保存日志并继续运行。保持 Agent 窗口运行，不要点击终端进入文本选择模式（旧 Windows 的快速编辑会暂停控制台输出）；睡眠或断网仍会真实离线。心跳独立于清单采集，短暂读取延迟不再导致错误离线。不要把同一配置同时用于两台网吧机器。连接密钥只在添加网吧时提供，妥善保管配置。
 
 ## 云服务器部署
 

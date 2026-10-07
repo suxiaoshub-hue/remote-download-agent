@@ -15,15 +15,31 @@ class OutputLog:
         self.file = file
 
     def write(self, value):
-        if self.console:
-            self.console.write(value)
         self.file.write(value)
         self.file.flush()
+        if self.console:
+            try:
+                self.console.write(value)
+                self.console.flush()
+            except UnicodeError:
+                encoding = getattr(self.console, 'encoding', None) or 'ascii'
+                fallback = value.encode(encoding, 'backslashreplace').decode(encoding)
+                try:
+                    self.console.write(fallback)
+                    self.console.flush()
+                except (OSError, ValueError, UnicodeError):
+                    self.console = None
+            except (OSError, ValueError):
+                self.console = None
+        return len(value)
 
     def flush(self):
-        if self.console:
-            self.console.flush()
         self.file.flush()
+        if self.console:
+            try:
+                self.console.flush()
+            except (OSError, ValueError, UnicodeError):
+                self.console = None
 
 
 def agent_arguments(config, folder):
