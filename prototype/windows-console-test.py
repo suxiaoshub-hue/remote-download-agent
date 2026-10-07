@@ -27,10 +27,11 @@ def check_console(code_page):
     assert kernel32.SetConsoleCursorPosition(handle, Coordinate(0, 0))
     message = '服务已启动，测试中文'
     print(message)
-    buffer = ctypes.create_unicode_buffer(len(message) + 1)
+    cell_count = len(message) * 2
+    buffer = ctypes.create_unicode_buffer(cell_count + 1)
     count = wintypes.DWORD()
-    assert kernel32.ReadConsoleOutputCharacterW(handle, buffer, len(message), Coordinate(0, 0), ctypes.byref(count))
-    assert buffer.value == message, repr(buffer.value)
+    assert kernel32.ReadConsoleOutputCharacterW(handle, buffer, cell_count, Coordinate(0, 0), ctypes.byref(count))
+    assert buffer.value.rstrip() == message, repr(buffer.value)
 
 
 if __name__ == '__main__':
