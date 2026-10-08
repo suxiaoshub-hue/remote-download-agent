@@ -1,8 +1,10 @@
 import json
+import io
 import os
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
+from contextlib import redirect_stdout
 
 from progress_reporter import ProgressReporter
 
@@ -32,7 +34,10 @@ class ReporterTests(unittest.TestCase):
                 return {}
 
             reporter = ProgressReporter(api, 'cafe', reader=reader, diagnostic_path=path)
-            reporter.run()
+            output = io.StringIO()
+            with redirect_stdout(output):
+                reporter.run()
+            self.assertIn('8517', output.getvalue())
             reader.read.assert_called_once_with([5131, 8517])
             self.assertIn('/api/tasks/first/telemetry', [endpoint for endpoint, payload in calls])
             with open(path, encoding='utf-8') as file:
