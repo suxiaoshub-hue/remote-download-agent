@@ -24,6 +24,8 @@ GAME_STATUSES = {'installed', 'not_installed', 'missing', 'pending', 'unknown'}
 
 def public_task(task):
     result = dict(task)
+    if task.get('telemetrySource') != 'pcstory-listview':
+        result['progress'] = None
     result['progressFresh'] = bool(task.get('telemetrySource') == 'pcstory-listview' and online(cafes[task['cafeId']]) and
                                   time.time() - (task.get('telemetryUpdatedAt') or 0) < 20 and
                                   0 <= time.time() - (task.get('sampledAt') or 0) < 20)

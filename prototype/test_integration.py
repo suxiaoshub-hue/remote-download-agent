@@ -139,6 +139,10 @@ class IntegrationTests(unittest.TestCase):
         self.assertFalse(delayed['progressFresh'])
         self.assertIsNone(delayed['etaSeconds'])
         self.assertEqual(delayed['progress'], .4)
+        server.tasks[task['id']].update(telemetrySource='filesystem', progress=.8, etaSeconds=5)
+        legacy = self.call('/api/state')['tasks'][0]
+        self.assertIsNone(legacy['progress'])
+        self.assertIsNone(legacy['etaSeconds'])
 
     def test_task_telemetry_rejects_fake_or_stale_sample(self):
         cafe = self.provision()
