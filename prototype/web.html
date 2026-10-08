@@ -69,7 +69,7 @@ function renderTasks(){
     if(active){
       if(task.status==='queued')actions.append(taskButton(task,'取消下发','cancel',true));
       else{actions.append(taskButton(task,actual==='paused'?'继续下载':'暂停下载',actual==='paused'?'resume':'pause',!busy&&task.progressFresh&&['paused','downloading','waiting','checking'].includes(actual)));actions.append(taskButton(task,'删除任务','remove',!busy&&task.progressFresh&&!['unknown','completed'].includes(actual)));}
-    }else{if(task.status==='removed') {const retry=document.createElement('button');retry.textContent='重新下载';retry.disabled=!cafeById(task.cafeId)?.online||!detailView?.fresh;retry.onclick=()=>createTask(task.gameId,task.cafeId);actions.append(retry);}actions.append(taskButton(task,'移除记录','dismiss',true));}
+    }else{if(task.status==='removed') {const retry=document.createElement('button');retry.textContent='重新下载';retry.disabled=!cafeById(task.cafeId)?.online||!(overview?.fresh||detailView?.fresh);retry.onclick=()=>createTask(task.gameId,task.cafeId);actions.append(retry);}actions.append(taskButton(task,'移除记录','dismiss',true));}
     row.append(info,actions);body.append(row);
   }
 }

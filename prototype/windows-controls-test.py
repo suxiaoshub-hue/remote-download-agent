@@ -1,10 +1,12 @@
 import json
+import io
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import time
+from contextlib import redirect_stdout
 
 from control_worker import ControlWorker
 from progress import WindowsListReader
@@ -41,7 +43,8 @@ def main():
             worker = ControlWorker(api, cafe['id'], reader=reader, journal_path=os.path.join(folder, 'agent-control.json'))
             for action, expected in [('pause', 'paused'), ('resume', 'downloading'), ('remove', 'removed')]:
                 command = case.call('/api/tasks/' + task['id'] + '/control', 'POST', {'action': action}, expected=201)
-                worker.poll()
+                with redirect_stdout(io.StringIO()):
+                    worker.poll()
                 current = case.call('/api/state')['tasks'][0]
                 assert current['downloadState'] == expected, current
                 assert current['control']['status'] == 'confirmed', current

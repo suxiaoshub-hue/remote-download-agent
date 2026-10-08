@@ -109,3 +109,37 @@ class ControlTests(unittest.TestCase):
         self.call('/api/tasks/' + task['id'] + '/dismiss', 'POST', {}, expected=409)
         self.call(endpoint, 'POST', self.sample(), token=cafe['agentToken'])
         self.call('/api/tasks/' + task['id'] + '/control', 'POST', {'action': 'resume'}, expected=409)
+
+    def test_removed_evidence_keeps_refreshing_while_replacement_is_queued(self):
+        cafe, task = self.active_task()
+        self.call('/api/tasks/' + task['id'] + '/telemetry', 'POST', self.sample(), token=cafe['agentToken'])
+        import server
+        missing = dict(self.sample('absent'), progress=None, listFields=[])
+        for index in range(3):
+            server.tasks[task['id']]['absenceSince'] = time.time() - 3
+            self.call('/api/tasks/' + task['id'] + '/telemetry', 'POST', missing, token=cafe['agentToken'])
+        self.call('/api/agents/inventory', 'POST', {'cafeId': cafe['id'], 'games': [{'gameId': 5131, 'name': 'Roblox', 'status': 'pending'}], 'disks': [{'path': 'D:\\', 'totalBytes': 10000, 'freeBytes': 9000, 'downloadDisk': True}]}, token=cafe['agentToken'])
+        replacement = self.call('/api/tasks', 'POST', {'cafeId': cafe['id'], 'gameId': 5131}, expected=201)
+        watched = self.call('/api/tasks/active/' + cafe['id'], token=cafe['agentToken'])
+        self.assertIn(task['id'], [item['id'] for item in watched['tasks']])
+        server.tasks[task['id']]['sampledAt'] -= 9
+        missing['sampledAt'] = time.time()
+        self.call('/api/tasks/' + task['id'] + '/telemetry', 'POST', missing, token=cafe['agentToken'])
+        claimed = self.call('/api/tasks/next/' + cafe['id'], token=cafe['agentToken'])
+        self.assertEqual(claimed['id'], replacement['id'])
+
+    def test_old_confirmation_finishes_operation_without_overwriting_current_progress(self):
+        cafe, task = self.active_task()
+        self.call('/api/tasks/' + task['id'] + '/telemetry', 'POST', self.sample(), token=cafe['agentToken'])
+        command = self.call('/api/tasks/' + task['id'] + '/control', 'POST', {'action': 'pause'}, expected=201)
+        self.call('/api/controls/next/' + cafe['id'], token=cafe['agentToken'])
+        endpoint = '/api/controls/' + command['id'] + '/status'
+        self.call(endpoint, 'POST', {'status': 'accepted'}, token=cafe['agentToken'])
+        old = self.sample('paused')
+        old['sampledAt'] -= 121
+        import server
+        server.controls[command['id']]['createdAt'] -= 122
+        result = self.call(endpoint, 'POST', {'status': 'confirmed', 'sample': old}, token=cafe['agentToken'])
+        self.assertEqual(result['status'], 'confirmed')
+        self.assertEqual(self.call('/api/state')['tasks'][0]['downloadState'], 'downloading')
+        self.assertEqual(result['confirmationSampledAt'], old['sampledAt'])

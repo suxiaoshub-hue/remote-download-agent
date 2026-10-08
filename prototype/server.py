@@ -44,7 +44,7 @@ def public_task(task):
     return result
 
 
-def clean_progress(data):
+def clean_progress(data, historical=False):
     if data.get('source') != 'pcstory-listview':
         raise ValueError('仅接受 PCStory 下载列表采样')
     state = data.get('downloadState')
@@ -57,7 +57,7 @@ def clean_progress(data):
             raise ValueError('进度字段不合法：' + name)
         fields[name] = value
     sampled_at = data.get('sampledAt')
-    if isinstance(sampled_at, bool) or not isinstance(sampled_at, (int, float)) or not math.isfinite(sampled_at) or abs(time.time() - sampled_at) > 120:
+    if isinstance(sampled_at, bool) or not isinstance(sampled_at, (int, float)) or not math.isfinite(sampled_at) or sampled_at <= 0 or (not historical and abs(time.time() - sampled_at) > 120):
         raise ValueError('进度样本时间不合法或已过期')
     remaining, speed = fields['remainingBytes'], fields['speedBytesPerSecond']
     estimate = remaining / speed if state == 'downloading' and remaining is not None and remaining > 0 and speed is not None and speed > 0 else None
@@ -275,11 +275,17 @@ class Handler(BaseHTTPRequestHandler):
                     raise ApiError('操作未确认接收', 409)
                 if status == 'confirmed':
                     sample = data.get('sample', {})
+                    evidence = clean_progress(sample, historical=True)
+                    if sample.get('gameId', task['gameId']) != task['gameId']:
+                        raise ApiError('操作结果 GID 不匹配', 409)
                     state = sample.get('downloadState')
                     expected = {'pause': ('paused',), 'resume': ('downloading', 'waiting', 'checking'), 'remove': ('removed',)}[command['action']]
                     if state not in expected:
                         raise ApiError('实际状态尚未确认操作成功', 409)
-                    if task['status'] in ACTIVE_STATUSES:
+                    if evidence['sampledAt'] > time.time() + 5 or evidence['sampledAt'] < command['createdAt'] - 5:
+                        raise ApiError('操作证据时间不匹配', 409)
+                    command['confirmationSampledAt'] = evidence['sampledAt']
+                    if task['status'] in ACTIVE_STATUSES and 0 <= time.time() - evidence['sampledAt'] < 8:
                         apply_progress(task, sample, confirmed_remove=command['action'] == 'remove')
                 command.update(status=status, error=str(data.get('error', ''))[:1000], updatedAt=time.time())
                 save_db()
@@ -316,7 +322,7 @@ class Handler(BaseHTTPRequestHandler):
             if parts[:3] == ['api', 'tasks', 'active'] and method == 'GET' and len(parts) == 4:
                 cafe_id = parts[-1]
                 self.authorize(cafe_id)
-                watched = [dict(task) for task in tasks.values() if task['cafeId'] == cafe_id and (task['status'] in ACTIVE_STATUSES or task['status'] == 'removed' and not task.get('hidden') and not any(other['cafeId'] == cafe_id and other['gameId'] == task['gameId'] and other['status'] in ('queued', 'delivering') + ACTIVE_STATUSES for other in tasks.values()))]
+                watched = [dict(task) for task in tasks.values() if task['cafeId'] == cafe_id and (task['status'] in ACTIVE_STATUSES or task['status'] == 'removed' and not task.get('hidden') and not any(other['cafeId'] == cafe_id and other['gameId'] == task['gameId'] and other['status'] in ACTIVE_STATUSES for other in tasks.values()))]
                 self.send_json({'tasks': watched})
                 return
             if parts[:3] == ['api', 'tasks', 'next'] and method == 'GET' and len(parts) == 4:
@@ -373,7 +379,7 @@ class Handler(BaseHTTPRequestHandler):
                 if task['status'] not in ACTIVE_STATUSES + ('removed',):
                     raise ApiError('任务当前不接受进度上报', 409)
                 if task['status'] == 'removed':
-                    if any(other['id'] != task['id'] and other['cafeId'] == task['cafeId'] and other['gameId'] == task['gameId'] and other['status'] in ('queued', 'delivering') + ACTIVE_STATUSES for other in tasks.values()):
+                    if any(other['id'] != task['id'] and other['cafeId'] == task['cafeId'] and other['gameId'] == task['gameId'] and other['status'] in ACTIVE_STATUSES for other in tasks.values()):
                         self.send_json(public_task(task))
                         return
                     if data.get('downloadState') not in ('absent', 'removed'):
