@@ -4,9 +4,12 @@ import math
 import os
 import re
 import time
+import threading
 from ctypes import wintypes
 
 import inventory
+
+WINDOW_LOCK = threading.RLock()
 
 
 def column_key(value):
@@ -54,14 +57,18 @@ def parse_row(headers, cells):
     if percent and (amount is None or not 0 <= amount <= 100):
         return None
     raw_state = values['状态'].strip()
-    state = {'正在下载': 'downloading', '下载中': 'downloading', '暂停下载': 'paused',
+    state = {'正在下载': 'downloading', '下载中': 'downloading', '暂停': 'paused', '暂停下载': 'paused',
              '已暂停': 'paused', '等待下载': 'waiting', '排队下载': 'waiting',
              '等待中': 'waiting', '校验中': 'checking', '正在校验': 'checking',
              '下载完成': 'completed', '已完成': 'completed', '下载失败': 'failed'}.get(raw_state, 'unknown')
+    if '暂停' in raw_state:
+        state = 'paused'
     remaining = next((byte_value(value, key) for key, value in values.items() if key.startswith('剩余')), None)
     speed = next((byte_value(value, key, speed=True) for key, value in values.items() if key.startswith('速度')), None)
+    update = next((byte_value(value, key) for key, value in values.items() if key.startswith('更新量')), None)
     return {'gameId': game_id, 'progress': amount / 100 if amount is not None else None,
             'downloadState': state, 'remainingBytes': remaining, 'speedBytesPerSecond': speed,
+            'updateBytes': update, 'listFields': [{'title': title, 'value': value} for title, value in zip(headers, cells)],
             'source': 'pcstory-listview', 'sampledAt': time.time()}
 
 
@@ -77,6 +84,9 @@ class WindowsListReader:
         self.user.FindWindowW.restype = wintypes.HWND
         self.user.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
         self.user.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        self.user.GetDlgCtrlID.argtypes = [wintypes.HWND]
+        self.user.GetParent.argtypes = [wintypes.HWND]
+        self.user.GetParent.restype = wintypes.HWND
         self.callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
         self.user.EnumChildWindows.argtypes = [wintypes.HWND, self.callback_type, wintypes.LPARAM]
         self.user.SendMessageTimeoutW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM, wintypes.UINT, wintypes.UINT, ctypes.POINTER(ctypes.c_size_t)]
@@ -91,7 +101,13 @@ class WindowsListReader:
         for name in ('ReadProcessMemory', 'WriteProcessMemory'):
             getattr(self.kernel, name).argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
 
-    def read(self, game_ids, window=None, test_executable=None):
+    def read(self, game_ids, window=None, test_executable=None, action=None):
+        with WINDOW_LOCK:
+            return self._read(game_ids, window, test_executable, action)
+
+    def _read(self, game_ids, window=None, test_executable=None, action=None):
+        if action is not None and (action not in ('pause', 'resume', 'remove') or len(game_ids) != 1):
+            raise ValueError('控件命令必须指定单一 GID 和已验证操作')
         if time.monotonic() < self.blocked_until:
             raise ValueError('PCStory 控件读取曾超时，稍后重试')
         window = window or self.user.FindWindowW('Global\\{4F7961BA-AD65-4018-BDEA-1BA1FF77CD66}', None)
@@ -106,7 +122,7 @@ class WindowsListReader:
         safe_to_free = True
         deadline = time.monotonic() + 4
 
-        def send(target, message, first=0, second=0):
+        def send(target, message, first=0, second=0, timeout=200):
             nonlocal safe_to_free
             if time.monotonic() > deadline:
                 raise ValueError('PCStory 列表较大，本轮采样超时')
@@ -115,7 +131,7 @@ class WindowsListReader:
             if owner.value != pid.value:
                 raise ValueError('PCStory 控件所属进程已变化')
             result = ctypes.c_size_t()
-            if not self.user.SendMessageTimeoutW(target, message, first, second, 0x1 | 0x2 | 0x20, 200, ctypes.byref(result)):
+            if not self.user.SendMessageTimeoutW(target, message, first, second, 0x1 | 0x2 | 0x20, timeout, ctypes.byref(result)):
                 safe_to_free = False
                 self.blocked_until = time.monotonic() + 300
                 raise ValueError('PCStory 控件响应超时，已停止采样并保留临时参数')
@@ -163,7 +179,13 @@ class WindowsListReader:
             samples = {}
             diagnostics = []
             requested = set(game_ids)
+            seen = set()
+            candidates = []
+            valid_lists = 0
             for listing in windows:
+                local_seen = set()
+                if self.user.GetDlgCtrlID(listing) != 1003:
+                    continue
                 header = send(listing, 0x1000 + 31)
                 if not header:
                     continue
@@ -182,6 +204,9 @@ class WindowsListReader:
                 diagnostics.append(diagnostic)
                 if not {'id', '状态', '进度'}.issubset(keys):
                     continue
+                if len(set(keys)) != len(keys):
+                    raise ValueError('下载列表存在重复标题')
+                valid_lists += 1
                 row_count = send(listing, 0x1000 + 4)
                 diagnostic['rows'] = row_count
                 if row_count > 1000:
@@ -199,6 +224,10 @@ class WindowsListReader:
                     if not identity.strip().isdigit() or int(identity) not in requested:
                         continue
                     cells = [cell(row, column) for column in range(count)]
+                    if cells[keys.index('id')].strip() != identity.strip():
+                        raise ValueError('下载列表正在排序，本轮重新采样')
+                    seen.add(int(identity))
+                    local_seen.add(int(identity))
                     sample = parse_row(headers, cells)
                     diagnostics[-1].setdefault('matchedRows', []).append(cells)
                     if sample:
@@ -206,7 +235,53 @@ class WindowsListReader:
                         if previous and {key: value for key, value in previous.items() if key != 'sampledAt'} != {key: value for key, value in sample.items() if key != 'sampledAt'}:
                             raise ValueError('多个下载列表对同一游戏返回不同进度')
                         samples[sample['gameId']] = sample
-            return {'samples': list(samples.values()), 'lists': diagnostics}
+                if send(listing, 0x1000 + 4) != row_count:
+                    raise ValueError('下载列表行数变化，本轮重新采样')
+                if action and self.user.GetDlgCtrlID(listing) == 1003 and requested.issubset(local_seen):
+                    candidates.append((listing, headers, row_count))
+            if action:
+                if len(candidates) != 1:
+                    raise ValueError('无法唯一定位 PCStory 下载任务控件')
+                listing, headers, row_count = candidates[0]
+                id_column = [column_key(value) for value in headers].index('id')
+                identities = [cell(row, id_column).strip() for row in range(row_count)]
+                target_id = str(game_ids[0])
+                if identities.count(target_id) != 1:
+                    raise ValueError('目标 GID 行不唯一，停止操作')
+                parent = self.user.GetParent(listing)
+                parent_class = ctypes.create_unicode_buffer(256)
+                self.user.GetClassNameW(parent, parent_class, 256)
+                if parent_class.value != '#32770':
+                    raise ValueError('下载控件父窗口不是预期的对话框')
+                selected = [identity for row, identity in enumerate(identities) if send(listing, 0x102c, row, 2) & 2]
+
+                def select(row, state):
+                    structure = ctypes.create_string_buffer(88)
+                    ctypes.c_uint32.from_buffer(structure, 12).value = state
+                    ctypes.c_uint32.from_buffer(structure, 16).value = 3
+                    transferred = ctypes.c_size_t()
+                    if not self.kernel.WriteProcessMemory(process, remote, ctypes.byref(structure), 88, ctypes.byref(transferred)) or transferred.value != 88:
+                        raise ValueError('原生任务选择参数写入失败')
+                    if not send(listing, 0x102b, row, remote):
+                        raise ValueError('原生任务选择失败')
+
+                try:
+                    select(-1, 0)
+                    select(identities.index(target_id), 3)
+                    selected_row = send(listing, 0x100c, -1, 2)
+                    if selected_row >= row_count or cell(selected_row, id_column).strip() != target_id or send(listing, 0x100c, selected_row, 2) != ctypes.c_size_t(-1).value:
+                        raise ValueError('唯一选中 GID 校验失败，未发送操作')
+                    deadline = time.monotonic() + 6
+                    send(parent, 0x111, {'pause': 0x8016, 'resume': 0x8017, 'remove': 0x8018}[action], timeout=5000)
+                finally:
+                    if safe_to_free:
+                        deadline = time.monotonic() + 2
+                        select(-1, 0)
+                        for row in range(send(listing, 0x1004)):
+                            if cell(row, id_column).strip() in selected:
+                                select(row, 2)
+            return {'samples': list(samples.values()), 'lists': diagnostics,
+                    'absentGameIds': sorted(requested - seen) if valid_lists else []}
         finally:
             if remote and safe_to_free:
                 self.kernel.VirtualFreeEx(process, remote, 0, 0x8000)

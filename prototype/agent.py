@@ -10,6 +10,7 @@ import urllib.request
 
 import inventory
 from progress_reporter import ProgressReporter
+from control_worker import ControlWorker
 
 
 def request(url, method='GET', payload=None, token=''):
@@ -116,6 +117,8 @@ def main():
     def api(path, method='GET', payload=None):
         return request(base + path, method, payload, args.agent_token)
 
+    control_worker = ControlWorker(api, args.cafe_id)
+    control_worker.start()
     heartbeat = Heartbeat(api, args.cafe_id)
     heartbeat.start()
     progress_reporter = ProgressReporter(api, args.cafe_id)

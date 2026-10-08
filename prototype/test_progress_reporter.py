@@ -10,6 +10,27 @@ from progress_reporter import ProgressReporter
 
 
 class ReporterTests(unittest.TestCase):
+    def test_valid_absence_is_reported_but_unreadable_gid_is_not(self):
+        with tempfile.TemporaryDirectory() as folder:
+            reader = Mock()
+            reader.read.return_value = {'samples': [], 'absentGameIds': [5131], 'lists': [{'headers': ['ID', '状态', '进度'], 'rows': 0}]}
+            calls = []
+
+            def api(endpoint, method='GET', payload=None):
+                if method == 'GET':
+                    return {'tasks': [{'id': 'task', 'gameId': 5131}]}
+                calls.append(payload)
+                return {}
+
+            reporter = ProgressReporter(api, 'cafe', reader=reader, diagnostic_path=os.path.join(folder, 'progress.json'))
+            self.assertEqual(reporter.interval, 1)
+            reporter.poll()
+            self.assertEqual(calls[0]['downloadState'], 'absent')
+            reader.read.return_value = {'samples': [], 'absentGameIds': [], 'lists': []}
+            with self.assertRaises(ValueError):
+                reporter.poll()
+            self.assertEqual(len(calls), 1)
+
     def test_idle_does_not_open_pcstory(self):
         reporter = ProgressReporter(lambda path: {'tasks': []}, 'cafe')
         with patch('progress_reporter.WindowsListReader') as factory:

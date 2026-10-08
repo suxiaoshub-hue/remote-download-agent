@@ -14,12 +14,14 @@ from urllib.parse import parse_qs, unquote, urlparse
 from runtime import configure_console
 
 lock = threading.RLock()
-cafes, tasks, inventories, catalog = {}, {}, {}, {}
+cafes, tasks, inventories, catalog, controls = {}, {}, {}, {}, {}
 DB_PATH = 'remote_download.db'
 ADMIN_TOKEN = ''
 FRESH_SECONDS = 120
 ONLINE_SECONDS = 75
 GAME_STATUSES = {'installed', 'not_installed', 'missing', 'pending', 'unknown'}
+ACTIVE_STATUSES = ('accepted', 'waiting', 'downloading', 'uncertain')
+CONTROL_PHASES = ('queued', 'delivering', 'accepted')
 
 
 def public_task(task):
@@ -27,10 +29,18 @@ def public_task(task):
     if task.get('telemetrySource') != 'pcstory-listview':
         result['progress'] = None
     result['progressFresh'] = bool(task.get('telemetrySource') == 'pcstory-listview' and online(cafes[task['cafeId']]) and
-                                  time.time() - (task.get('telemetryUpdatedAt') or 0) < 20 and
-                                  0 <= time.time() - (task.get('sampledAt') or 0) < 20)
+                                  time.time() - (task.get('telemetryUpdatedAt') or 0) < 8 and
+                                  0 <= time.time() - (task.get('sampledAt') or 0) < 8)
     if not result['progressFresh']:
         result['etaSeconds'] = None
+        result['speedBytesPerSecond'] = None
+    result['displayState'] = task['status']
+    if task['status'] in ACTIVE_STATUSES:
+        result['displayState'] = task.get('downloadState', 'unknown') if result['progressFresh'] else 'unknown'
+        if result['displayState'] == 'absent':
+            result['displayState'] = 'unknown'
+    related = [command for command in controls.values() if command['taskId'] == task['id']]
+    result['control'] = max(related, key=lambda command: command['createdAt']) if related else None
     return result
 
 
@@ -38,10 +48,10 @@ def clean_progress(data):
     if data.get('source') != 'pcstory-listview':
         raise ValueError('仅接受 PCStory 下载列表采样')
     state = data.get('downloadState')
-    if state not in ('downloading', 'paused', 'waiting', 'checking', 'completed', 'failed', 'unknown'):
+    if state not in ('downloading', 'paused', 'waiting', 'checking', 'completed', 'failed', 'unknown', 'absent', 'removed'):
         raise ValueError('下载状态不合法')
     fields = {}
-    for name, maximum in (('progress', 1), ('remainingBytes', 2**63 - 1), ('speedBytesPerSecond', 2**63 - 1)):
+    for name, maximum in (('progress', 1), ('remainingBytes', 2**63 - 1), ('speedBytesPerSecond', 2**63 - 1), ('updateBytes', 2**63 - 1)):
         value = data.get(name)
         if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= maximum):
             raise ValueError('进度字段不合法：' + name)
@@ -54,7 +64,39 @@ def clean_progress(data):
     eta = math.ceil(estimate) if estimate is not None and math.isfinite(estimate) else None
     fields.update(downloadState=state, etaSeconds=eta, telemetryUpdatedAt=time.time(), sampledAt=sampled_at,
                   telemetrySource='pcstory-listview')
+    raw = data.get('listFields', [])
+    if not isinstance(raw, list) or len(raw) > 24:
+        raise ValueError('下载列表字段过多或不合法')
+    for item in raw:
+        if not isinstance(item, dict) or not isinstance(item.get('title'), str) or not isinstance(item.get('value'), str) or len(item['title']) > 200 or len(item['value']) > 2048:
+            raise ValueError('下载列表单元格不合法')
+    fields['listFields'] = [{'title': item['title'], 'value': item['value']} for item in raw]
     return fields
+
+
+def apply_progress(task, data, confirmed_remove=False):
+    if data.get('gameId', task['gameId']) != task['gameId']:
+        raise ApiError('采样 GID 与任务不匹配', 409)
+    fields = clean_progress(data)
+    if fields['downloadState'] == 'removed' and not confirmed_remove:
+        raise ApiError('删除状态须连续读取缺失或操作确认', 409)
+    if fields['downloadState'] == 'absent':
+        now = time.time()
+        if now - fields['sampledAt'] > 8:
+            raise ApiError('缺失证据已经过期', 409)
+        if now - task.get('acceptedAt', 0) < 15 and not task.get('seenInList'):
+            return
+        task['absenceSince'] = task.get('absenceSince') or now
+        task['absenceCount'] = task.get('absenceCount', 0) + 1
+        fields.update(progress=task.get('progress'), speedBytesPerSecond=None, etaSeconds=None)
+        if task['absenceCount'] >= 3 and now - task['absenceSince'] >= 2:
+            fields['downloadState'] = 'removed'
+    else:
+        task.update(absenceCount=0, absenceSince=None, seenInList=True)
+    task.update(fields, updatedAt=time.time())
+    if fields['downloadState'] == 'removed':
+        game = inventories.get(task['cafeId'], {}).get('games', {}).get(task['gameId'], {})
+        task['status'] = 'completed' if fresh(task['cafeId']) and game.get('status') == 'installed' else 'removed'
 
 
 def token_hash(token):
@@ -63,7 +105,7 @@ def token_hash(token):
 
 def save_db():
     with sqlite3.connect(DB_PATH) as database:
-        values = {'cafes': cafes, 'tasks': tasks, 'inventories': inventories, 'catalog': catalog}
+        values = {'cafes': cafes, 'tasks': tasks, 'inventories': inventories, 'catalog': catalog, 'controls': controls}
         for name, value in values.items():
             database.execute('INSERT OR REPLACE INTO app_state VALUES (?,?)', (name, json.dumps(value, ensure_ascii=False)))
 
@@ -72,7 +114,7 @@ def load_db():
     with lock, sqlite3.connect(DB_PATH) as database:
         database.execute('CREATE TABLE IF NOT EXISTS app_state (name TEXT PRIMARY KEY, value TEXT NOT NULL)')
         saved = dict(database.execute('SELECT name,value FROM app_state'))
-        for name, target in (('cafes', cafes), ('tasks', tasks), ('inventories', inventories), ('catalog', catalog)):
+        for name, target in (('cafes', cafes), ('tasks', tasks), ('inventories', inventories), ('catalog', catalog), ('controls', controls)):
             target.clear()
             target.update(json.loads(saved.get(name, '{}')))
         normalized = {int(key): value for key, value in catalog.items()}
@@ -91,6 +133,13 @@ def fresh(cafe_id):
     return bool(current and time.time() - current['updatedAt'] <= FRESH_SECONDS and online(cafes[cafe_id]) and not cafes[cafe_id].get('error'))
 
 
+def can_download(cafe_id, game_id):
+    game = inventories.get(cafe_id, {}).get('games', {}).get(game_id, {})
+    if game.get('status') in ('not_installed', 'missing'):
+        return True
+    return game.get('status') == 'pending' and any(task['cafeId'] == cafe_id and task['gameId'] == game_id and task['status'] == 'removed' and public_task(task)['progressFresh'] for task in tasks.values())
+
+
 def public_cafe(cafe):
     return {key: value for key, value in dict(cafe, online=online(cafe)).items() if key != 'tokenHash'}
 
@@ -100,10 +149,14 @@ def inventory_view(cafe_id, query=''):
     games = {game_id: dict(game, status='not_installed' if current['complete'] else 'unknown', localPath='') for game_id, game in catalog.items()}
     games.update(current['games'])
     for task in tasks.values():
-        if task['cafeId'] == cafe_id and task['gameId'] in games and task['status'] in ('queued', 'delivering', 'accepted', 'waiting', 'downloading'):
+        if task['cafeId'] == cafe_id and task['gameId'] in games and task['status'] in ('queued', 'delivering') + ACTIVE_STATUSES:
             observed = public_task(task)
             state = task.get('downloadState') if observed['progressFresh'] else None
             games[task['gameId']] = dict(games[task['gameId']], status=state if state in ('downloading', 'paused', 'checking', 'waiting') else 'pending')
+    for task in tasks.values():
+        if task['cafeId'] == cafe_id and task['status'] == 'removed' and public_task(task)['progressFresh'] and task['gameId'] in games and games[task['gameId']]['status'] != 'installed':
+            if not any(other['cafeId'] == cafe_id and other['gameId'] == task['gameId'] and other['status'] in ('queued', 'delivering') + ACTIVE_STATUSES for other in tasks.values()):
+                games[task['gameId']]['status'] = 'not_installed'
     query = query.casefold().strip()
     selected = [game for game in games.values() if not query or query in str(game['gameId']) or query in game['name'].casefold()]
     return {'cafeId': cafe_id, 'reported': cafe_id in inventories, 'fresh': fresh(cafe_id),
@@ -186,6 +239,52 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(data, dict):
                 raise ApiError('请求必须是 JSON 对象')
         with lock:
+            if parts[:3] == ['api', 'controls', 'next'] and len(parts) == 4 and method == 'GET':
+                cafe_id = parts[-1]
+                self.authorize(cafe_id)
+                if not online(cafes[cafe_id]) or any(command['cafeId'] == cafe_id and command['status'] == 'accepted' for command in controls.values()):
+                    self.send_json({})
+                    return
+                pending = next((command for command in controls.values() if command['cafeId'] == cafe_id and command['status'] == 'delivering'), None)
+                pending = pending or next((command for command in controls.values() if command['cafeId'] == cafe_id and command['status'] == 'queued'), None)
+                if pending:
+                    pending['status'] = 'delivering'
+                    save_db()
+                self.send_json(pending or {})
+                return
+            if parts[:2] == ['api', 'controls'] and len(parts) == 4 and parts[-1] == 'status' and method == 'POST':
+                command = controls.get(parts[2])
+                if not command:
+                    raise ApiError('操作不存在', 404)
+                self.authorize(command['cafeId'])
+                status = data.get('status')
+                if status not in ('accepted', 'confirmed', 'failed', 'uncertain'):
+                    raise ApiError('操作结果不合法')
+                if command['status'] not in CONTROL_PHASES:
+                    self.send_json(command)
+                    return
+                task = tasks[command['taskId']]
+                if status == 'accepted':
+                    if command['status'] not in ('delivering', 'accepted'):
+                        raise ApiError('操作尚未领取', 409)
+                    current = public_task(task)
+                    expected = 'paused' if command['action'] == 'resume' else None
+                    if task['status'] not in ACTIVE_STATUSES or not current['progressFresh'] or (expected and current['downloadState'] != expected):
+                        raise ApiError('本地状态变化，请重新确认操作', 409)
+                elif command['status'] != 'accepted' and status == 'confirmed':
+                    raise ApiError('操作未确认接收', 409)
+                if status == 'confirmed':
+                    sample = data.get('sample', {})
+                    state = sample.get('downloadState')
+                    expected = {'pause': ('paused',), 'resume': ('downloading', 'waiting', 'checking'), 'remove': ('removed',)}[command['action']]
+                    if state not in expected:
+                        raise ApiError('实际状态尚未确认操作成功', 409)
+                    if task['status'] in ACTIVE_STATUSES:
+                        apply_progress(task, sample, confirmed_remove=command['action'] == 'remove')
+                command.update(status=status, error=str(data.get('error', ''))[:1000], updatedAt=time.time())
+                save_db()
+                self.send_json(command)
+                return
             if parts[:2] == ['api', 'agents'] and method == 'POST':
                 cafe_id = str(data['cafeId'])
                 self.authorize(cafe_id)
@@ -217,7 +316,8 @@ class Handler(BaseHTTPRequestHandler):
             if parts[:3] == ['api', 'tasks', 'active'] and method == 'GET' and len(parts) == 4:
                 cafe_id = parts[-1]
                 self.authorize(cafe_id)
-                self.send_json({'tasks': [dict(task) for task in tasks.values() if task['cafeId'] == cafe_id and task['status'] in ('accepted', 'waiting', 'downloading', 'uncertain')]})
+                watched = [dict(task) for task in tasks.values() if task['cafeId'] == cafe_id and (task['status'] in ACTIVE_STATUSES or task['status'] == 'removed' and not task.get('hidden') and not any(other['cafeId'] == cafe_id and other['gameId'] == task['gameId'] and other['status'] in ('queued', 'delivering') + ACTIVE_STATUSES for other in tasks.values()))]
+                self.send_json({'tasks': watched})
                 return
             if parts[:3] == ['api', 'tasks', 'next'] and method == 'GET' and len(parts) == 4:
                 cafe_id = parts[-1]
@@ -229,7 +329,7 @@ class Handler(BaseHTTPRequestHandler):
                         self.send_json({})
                         return
                     game = inventories[cafe_id]['games'].get(pending['gameId'], {})
-                    if game.get('status') not in ('not_installed', 'missing'):
+                    if not can_download(cafe_id, pending['gameId']):
                         pending.update(status='failed', updatedAt=time.time())
                         save_db()
                         self.send_json({})
@@ -248,18 +348,20 @@ class Handler(BaseHTTPRequestHandler):
                     raise ApiError('任务状态不合法')
                 if status == 'accepted' and task['status'] != 'completed':
                     game = inventories.get(task['cafeId'], {}).get('games', {}).get(task['gameId'], {})
-                    if task['status'] not in ('delivering', 'accepted') or not fresh(task['cafeId']) or game.get('status') not in ('not_installed', 'missing'):
+                    if task['status'] not in ('delivering', 'accepted') or not fresh(task['cafeId']) or not can_download(task['cafeId'], task['gameId']):
                         raise ApiError('任务状态或库存变化，停止下发', 409)
-                if task['status'] == 'completed' or task['status'] == status:
+                if task['status'] in ('completed', 'removed') or task['status'] == status:
                     self.send_json(task)
                     return
-                if task['status'] in ('cancelled', 'completed', 'failed'):
+                if task['status'] in ('cancelled', 'completed', 'failed', 'removed'):
                     raise ApiError('此任务已经结束', 409)
                 if status == 'completed':
                     local_game = inventories.get(task['cafeId'], {}).get('games', {}).get(task['gameId'], {})
                     if local_game.get('status') != 'installed' or not fresh(task['cafeId']):
                         raise ApiError('尚无新的本地已下载记录', 409)
                 task.update(status=status, updatedAt=time.time())
+                if status == 'accepted':
+                    task['acceptedAt'] = time.time()
                 save_db()
                 self.send_json(task)
                 return
@@ -268,16 +370,22 @@ class Handler(BaseHTTPRequestHandler):
                 if not task:
                     raise ApiError('任务不存在', 404)
                 self.authorize(task['cafeId'])
-                if task['status'] not in ('accepted', 'waiting', 'downloading', 'uncertain'):
+                if task['status'] not in ACTIVE_STATUSES + ('removed',):
                     raise ApiError('任务当前不接受进度上报', 409)
-                task.update(clean_progress(data), updatedAt=time.time())
+                if task['status'] == 'removed':
+                    if any(other['id'] != task['id'] and other['cafeId'] == task['cafeId'] and other['gameId'] == task['gameId'] and other['status'] in ('queued', 'delivering') + ACTIVE_STATUSES for other in tasks.values()):
+                        self.send_json(public_task(task))
+                        return
+                    if data.get('downloadState') not in ('absent', 'removed'):
+                        task['status'] = 'waiting'
+                apply_progress(task, data)
                 cafes[task['cafeId']]['progressError'] = ''
                 save_db()
                 self.send_json(public_task(task))
                 return
             self.authorize()
             if parsed.path == '/api/state' and method == 'GET':
-                self.send_json({'cafes': [public_cafe(cafe) for cafe in cafes.values()], 'tasks': [public_task(task) for task in tasks.values()]})
+                self.send_json({'cafes': [public_cafe(cafe) for cafe in cafes.values()], 'tasks': [public_task(task) for task in tasks.values() if not task.get('hidden')]})
             elif parsed.path == '/api/cafes' and method == 'POST':
                 name = str(data['name']).strip()[:100]
                 if not name:
@@ -313,7 +421,7 @@ class Handler(BaseHTTPRequestHandler):
                 if cafe_id not in cafes or not fresh(cafe_id):
                     raise ApiError('网吧离线或库存未更新，请等待 Agent 上报', 409)
                 game = inventories[cafe_id]['games'].get(game_id)
-                if not game or game['status'] not in ('not_installed', 'missing'):
+                if not game or not can_download(cafe_id, game_id):
                     raise ApiError('游戏已下载或状态未确认，不能下发', 409)
                 if any(task['cafeId'] == cafe_id and task['gameId'] == game_id and task['status'] in ('queued','delivering','accepted','waiting','downloading','uncertain') for task in tasks.values()):
                     raise ApiError('已有此游戏的任务，不能重复下发', 409)
@@ -331,6 +439,34 @@ class Handler(BaseHTTPRequestHandler):
                 tasks[task['id']] = task
                 save_db()
                 self.send_json(task, 201)
+            elif parts[:2] == ['api', 'tasks'] and len(parts) == 4 and parts[-1] in ('control', 'dismiss') and method == 'POST':
+                task = tasks.get(parts[2])
+                if not task:
+                    raise ApiError('任务不存在', 404)
+                if parts[-1] == 'dismiss':
+                    if task['status'] in ('queued', 'delivering') + ACTIVE_STATUSES:
+                        raise ApiError('请先删除本地任务或取消未下发任务', 409)
+                    task['hidden'] = True
+                    save_db()
+                    self.send_json({'ok': True})
+                    return
+                action = data.get('action')
+                current = public_task(task)
+                if action not in ('pause', 'resume', 'remove'):
+                    raise ApiError('操作不合法')
+                if task['status'] not in ACTIVE_STATUSES or not current['progressFresh'] or current['downloadState'] in ('absent', 'removed', 'unknown', 'completed'):
+                    raise ApiError('请等待新鲜的本地下载状态', 409)
+                if action == 'resume' and current['downloadState'] != 'paused':
+                    raise ApiError('仅暂停任务可以继续', 409)
+                if action == 'pause' and current['downloadState'] not in ('downloading', 'waiting', 'checking'):
+                    raise ApiError('该任务当前不能暂停', 409)
+                if any(command['taskId'] == task['id'] and command['status'] in CONTROL_PHASES for command in controls.values()):
+                    raise ApiError('此任务已有操作正在执行', 409)
+                command = {'id': uuid.uuid4().hex, 'taskId': task['id'], 'cafeId': task['cafeId'], 'gameId': task['gameId'],
+                           'action': action, 'status': 'queued', 'createdAt': time.time(), 'updatedAt': time.time()}
+                controls[command['id']] = command
+                save_db()
+                self.send_json(command, 201)
             elif parts[:2] == ['api','tasks'] and len(parts) == 4 and parts[-1] == 'cancel' and method == 'POST':
                 task = tasks.get(parts[2])
                 if not task:

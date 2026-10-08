@@ -13,3 +13,7 @@ agent-instance.lock
 agent.log
 server.log
 pcstory-task-*.txt
+agent-control.json
+agent-control.json.tmp
+pcstory-progress.json
+pcstory-progress.json.tmp

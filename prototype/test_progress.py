@@ -12,6 +12,8 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(sample['downloadState'], 'downloading')
         self.assertEqual(sample['remainingBytes'], round(604.69 * 1048576))
         self.assertEqual(sample['speedBytesPerSecond'], 206 * 1024)
+        self.assertEqual(sample['updateBytes'], round(623.20 * 1048576))
+        self.assertEqual(sample['listFields'][3], {'title': '进度', 'value': '2.97%'})
 
     def test_paused_row_keeps_observed_zero_with_no_speed(self):
         sample = progress.parse_row(['ID', '状态', '进度', '剩余(MB)', '速度(KB/s)'], ['5131', '暂停下载', '0.00%', '', ''])

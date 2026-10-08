@@ -8,7 +8,7 @@ from progress import WindowsListReader
 
 
 class ProgressReporter:
-    def __init__(self, api, cafe_id, interval=5, reader=None, diagnostic_path='pcstory-progress.json'):
+    def __init__(self, api, cafe_id, interval=1, reader=None, diagnostic_path='pcstory-progress.json'):
         self.api = api
         self.cafe_id = cafe_id
         self.interval = interval
@@ -40,6 +40,9 @@ class ProgressReporter:
         missing = []
         for task in tasks:
             sample = samples.get(task['gameId'])
+            if sample is None and task['gameId'] in result.get('absentGameIds', []):
+                sample = {'gameId': task['gameId'], 'source': 'pcstory-listview', 'sampledAt': time.time(),
+                          'downloadState': 'absent', 'progress': None, 'listFields': []}
             if sample is None:
                 missing.append(str(task['gameId']))
                 continue
@@ -52,6 +55,7 @@ class ProgressReporter:
 
     def run(self):
         while not self.stopped.is_set():
+            started = time.monotonic()
             try:
                 self.poll()
             except Exception as error:
@@ -67,7 +71,7 @@ class ProgressReporter:
                     self.save_diagnostic(dict(self.diagnostic, error=message))
                 except OSError:
                     pass
-            self.stopped.wait(self.interval)
+            self.stopped.wait(max(0, self.interval - (time.monotonic() - started)))
 
     def start(self):
         self.thread.start()

@@ -13,7 +13,23 @@ void SetCell(int row, int column, const wchar_t* value) {
     SendMessageW(downloadList, LVM_SETITEMTEXTW, row, reinterpret_cast<LPARAM>(&item));
 }
 
-LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM first, LPARAM second) {
+INT_PTR CALLBACK WindowProc(HWND window, UINT message, WPARAM first, LPARAM second) {
+    if (message == WM_COMMAND) {
+        int selected = static_cast<int>(SendMessageW(downloadList, LVM_GETNEXTITEM, -1, LVNI_SELECTED));
+        if (selected < 0 || SendMessageW(downloadList, LVM_GETNEXTITEM, selected, LVNI_SELECTED) != -1) return FALSE;
+        wchar_t identity[32]{};
+        LVITEMW item{};
+        item.iSubItem = 1;
+        item.pszText = identity;
+        item.cchTextMax = 32;
+        SendMessageW(downloadList, LVM_GETITEMTEXTW, selected, reinterpret_cast<LPARAM>(&item));
+        if (std::wstring(identity) != L"5131") return FALSE;
+        if (first == 0x8016) SetCell(selected, 3, L"暂停下载");
+        else if (first == 0x8017) SetCell(selected, 3, L"正在下载");
+        else if (first == 0x8018) SendMessageW(downloadList, LVM_DELETEITEM, selected, 0);
+        else return FALSE;
+        return TRUE;
+    }
     if (message == WM_APP + 1) {
         SetCell(1, 2, L"17.25%");
         SetCell(1, 3, L"暂停下载");
@@ -26,23 +42,23 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM first, LPARAM seco
     }
     if (message == WM_CLOSE) { DestroyWindow(window); return 0; }
     if (message == WM_DESTROY) { PostQuitMessage(0); return 0; }
-    return DefWindowProcW(window, message, first, second);
+    return FALSE;
 }
 
 int wmain(int argc, wchar_t** argv) {
     if (argc != 2) return 1;
     INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_LISTVIEW_CLASSES};
     if (!InitCommonControlsEx(&controls)) return 2;
-    WNDCLASSW definition{};
-    definition.lpfnWndProc = WindowProc;
-    definition.hInstance = GetModuleHandleW(nullptr);
-    definition.lpszClassName = L"PcstoryProgressFixture";
-    if (!RegisterClassW(&definition)) return 3;
-    HWND window = CreateWindowW(definition.lpszClassName, L"Progress Fixture", WS_OVERLAPPEDWINDOW,
-                                0, 0, 900, 200, nullptr, nullptr, definition.hInstance, nullptr);
+    alignas(DWORD) unsigned char templateBytes[64]{};
+    auto dialog = reinterpret_cast<DLGTEMPLATE*>(templateBytes);
+    dialog->style = WS_OVERLAPPEDWINDOW;
+    dialog->cx = 900;
+    dialog->cy = 200;
+    HINSTANCE instance = GetModuleHandleW(nullptr);
+    HWND window = CreateDialogIndirectParamW(instance, dialog, nullptr, WindowProc, 0);
     if (!window) return 4;
-    CreateWindowW(WC_LISTVIEWW, L"unrelated", WS_CHILD | LVS_REPORT, 0, 0, 50, 20, window, nullptr, definition.hInstance, nullptr);
-    downloadList = CreateWindowW(WC_LISTVIEWW, L"download", WS_CHILD | LVS_REPORT, 0, 0, 900, 100, window, nullptr, definition.hInstance, nullptr);
+    CreateWindowW(WC_LISTVIEWW, L"unrelated", WS_CHILD | LVS_REPORT, 0, 0, 50, 20, window, nullptr, instance, nullptr);
+    downloadList = CreateWindowW(WC_LISTVIEWW, L"download", WS_CHILD | LVS_REPORT, 0, 0, 900, 100, window, reinterpret_cast<HMENU>(1003), instance, nullptr);
     if (!downloadList) return 5;
     const wchar_t* headers[] = {L"游戏名", L"ID", L"进度", L"状态", L"速度(KB/S)", L"剩余(MB)", L"更新量(MB)"};
     for (int column = 0; column < 7; ++column) {
@@ -60,12 +76,18 @@ int wmain(int argc, wchar_t** argv) {
         SendMessageW(downloadList, LVM_INSERTITEMW, 0, reinterpret_cast<LPARAM>(&item));
     }
     SetCell(0, 1, L"9999");
+    SetCell(0, 2, L"12.00%");
+    SetCell(0, 3, L"正在下载");
     SetCell(1, 1, L"5131");
     SetCell(1, 2, L"2.97%");
     SetCell(1, 3, L"正在下载");
     SetCell(1, 4, L"1024.00");
     SetCell(1, 5, L"604.69");
     SetCell(1, 6, L"623.20");
+    LVITEMW selected{};
+    selected.stateMask = LVIS_SELECTED;
+    selected.state = LVIS_SELECTED;
+    SendMessageW(downloadList, LVM_SETITEMSTATE, 0, reinterpret_cast<LPARAM>(&selected));
     std::ofstream(argv[1]) << reinterpret_cast<std::uintptr_t>(window);
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {

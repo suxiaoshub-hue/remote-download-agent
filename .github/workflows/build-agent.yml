@@ -39,6 +39,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Native IPC tests failed' }
           python prototype/windows-progress-test.py build/adapter/Release/PcstoryProgressFixture.exe
           if ($LASTEXITCODE -ne 0) { throw 'Native progress sampling tests failed' }
+          python prototype/windows-controls-test.py build/adapter/Release/PcstoryProgressFixture.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Native GID control tests failed' }
       - name: Prepare package
         shell: pwsh
         run: |
