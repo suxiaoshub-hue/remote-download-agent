@@ -115,7 +115,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(replay['id'], task['id'])
         self.call('/api/tasks/' + task['id'] + '/status', 'POST', {'status': 'accepted'}, token=cafe['agentToken'])
         self.call('/api/tasks/' + task['id'] + '/status', 'POST', {'status': 'downloading'}, token=cafe['agentToken'])
-        self.assertIsNone(self.call('/api/state')['tasks'][0]['progress'])
+        self.assertEqual(self.call('/api/state')['tasks'][0]['progress'], 0)
         server.load_db()
         self.assertEqual(server.inventories[cafe['id']]['games'][5131]['name'], 'Roblox')
 
@@ -143,6 +143,23 @@ class IntegrationTests(unittest.TestCase):
             'downloadedBytes': 6000, 'totalBytes': 5000, 'speedBytesPerSecond': 1000,
             'sampledAt': time.time(), 'source': 'guess'
         }, token=cafe['agentToken'], expected=400)
+
+    def test_pending_pcstory_inventory_updates_task_status_without_hiding_zero_progress(self):
+        cafe = self.provision()
+        self.report(cafe)
+        task = self.call('/api/tasks', 'POST', {'cafeId': cafe['id'], 'gameId': 5131}, expected=201)
+        self.call('/api/tasks/next/' + cafe['id'], token=cafe['agentToken'])
+        self.call('/api/tasks/' + task['id'] + '/status', 'POST', {'status': 'accepted'}, token=cafe['agentToken'])
+        self.call('/api/tasks/' + task['id'] + '/status', 'POST', {'status': 'downloading'}, token=cafe['agentToken'])
+        self.call('/api/agents/inventory', 'POST', {
+            'cafeId': cafe['id'], 'complete': True,
+            'games': [{'gameId': 5131, 'name': 'Roblox', 'status': 'pending', 'rawStatus': 2, 'sizeBytes': 5000}],
+            'disks': [{'path': 'D:\\', 'freeBytes': 9000, 'totalBytes': 10000, 'downloadDisk': True}]
+        }, token=cafe['agentToken'])
+        current = self.call('/api/state')['tasks'][0]
+        self.assertEqual(current['status'], 'waiting')
+        self.assertEqual(current['progress'], 0)
+        self.assertIsNone(current['etaSeconds'])
         self.call('/api/tasks/' + task['id'] + '/telemetry', 'POST', {
             'downloadedBytes': 2000, 'totalBytes': 5000, 'speedBytesPerSecond': 1000,
             'sampledAt': time.time() - 600, 'source': 'filesystem'

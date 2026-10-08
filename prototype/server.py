@@ -163,8 +163,13 @@ class Handler(BaseHTTPRequestHandler):
                         catalog[game_id] = {'gameId': game_id, 'name': game['name'], 'sizeBytes': game['sizeBytes']}
                     for task in tasks.values():
                         game = current['games'].get(task['gameId'], {})
-                        if task['cafeId'] == cafe_id and task['status'] in ('accepted', 'waiting', 'downloading', 'uncertain') and game.get('status') == 'installed':
+                        if task['cafeId'] != cafe_id or task['status'] not in ('accepted', 'waiting', 'downloading', 'uncertain'):
+                            continue
+                        if game.get('status') == 'installed':
                             task.update(status='completed', updatedAt=time.time())
+                        elif game.get('status') == 'pending':
+                            task.update(status='waiting', progress=task.get('progress', 0) if task.get('progress') is not None else 0,
+                                        etaSeconds=None, updatedAt=time.time())
                 elif action == 'error':
                     cafe['error'] = str(data.get('error', ''))[:1000]
                 elif action not in ('register', 'heartbeat'):
@@ -213,7 +218,7 @@ class Handler(BaseHTTPRequestHandler):
                     local_game = inventories.get(task['cafeId'], {}).get('games', {}).get(task['gameId'], {})
                     if local_game.get('status') != 'installed' or not fresh(task['cafeId']):
                         raise ApiError('尚无新的本地已下载记录', 409)
-                task.update(status=status, updatedAt=time.time(), progress=None)
+                task.update(status=status, updatedAt=time.time(), progress=task.get('progress', 0))
                 save_db()
                 self.send_json(task)
                 return
@@ -299,7 +304,7 @@ class Handler(BaseHTTPRequestHandler):
                 if game['sizeBytes'] and max(disk['freeBytes'] for disk in disks) < game['sizeBytes']:
                     raise ApiError('PCStory 下载盘剩余容量不足', 409)
                 task = {'id': uuid.uuid4().hex, 'cafeId': cafe_id, 'gameId': game_id, 'name': game['name'],
-                        'status': 'queued', 'progress': None, 'downloadedBytes': None,
+                        'status': 'queued', 'progress': 0, 'downloadedBytes': None,
                         'totalBytes': int(game.get('sizeBytes', 0) or 0),
                         'speedBytesPerSecond': None, 'etaSeconds': None,
                         'telemetryUpdatedAt': None, 'telemetrySource': None,

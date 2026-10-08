@@ -74,6 +74,12 @@ class LiveTests(unittest.TestCase):
             self.assertEqual(filesystem_bytes(folder), 17)
             self.assertEqual(filesystem_bytes(os.path.join(folder, 'missing')), None)
 
+    def test_telemetry_binds_download_path_after_inventory_refresh(self):
+        from agent import bind_telemetry_path
+        telemetry = {'task': {'gameId': 5131}, 'path': '', 'baseline': None}
+        bound = bind_telemetry_path(telemetry, {'games': [{'gameId': 5131, 'localPath': 'D:\\Roblox'}]})
+        self.assertEqual(bound['path'], 'D:\\Roblox')
+
 
 if __name__ == '__main__':
     unittest.main()

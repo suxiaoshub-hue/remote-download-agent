@@ -43,6 +43,17 @@ def filesystem_bytes(path):
     return total
 
 
+def bind_telemetry_path(telemetry, snapshot):
+    if telemetry.get('path'):
+        return telemetry
+    game_id = telemetry.get('task', {}).get('gameId')
+    game = next((item for item in snapshot.get('games', []) if item.get('gameId') == game_id), None)
+    if game:
+        telemetry['path'] = game.get('localPath', '')
+        telemetry['baseline'] = filesystem_bytes(telemetry['path'])
+    return telemetry
+
+
 def request(url, method='GET', payload=None, token=''):
     body = json.dumps(payload).encode('utf-8') if payload is not None else None
     headers = {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token}
@@ -166,6 +177,7 @@ def main():
                     path = game.get('localPath', '')
                     telemetry = {'task': adapter.task, 'baseline': filesystem_bytes(path),
                                  'previous': None, 'path': path}
+                last_inventory = 0
             if journal.record and journal.record['phase'] == 'result':
                 api('/api/tasks/' + journal.record['task']['id'] + '/status', 'POST', {'status': journal.record['status']})
                 journal.clear()
@@ -201,6 +213,8 @@ def main():
                     folder = args.pcstory_folder or inventory.locate_folder()
                     current = inventory.snapshot(folder)
                     latest_inventory = current
+                    if telemetry:
+                        bind_telemetry_path(telemetry, current)
                     api('/api/agents/inventory', 'POST', dict(current, cafeId=args.cafe_id))
                     print('清单上报：%d 个游戏，%d 个下载磁盘' % (len(current['games']), len(current['disks'])))
                 except Exception as error:
