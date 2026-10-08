@@ -354,8 +354,11 @@ class Handler(BaseHTTPRequestHandler):
                     raise ApiError('任务状态不合法')
                 if status == 'accepted' and task['status'] != 'completed':
                     game = inventories.get(task['cafeId'], {}).get('games', {}).get(task['gameId'], {})
-                    if task['status'] not in ('delivering', 'accepted') or not fresh(task['cafeId']) or not can_download(task['cafeId'], task['gameId']):
+                    previously_authorized = task['status'] == 'accepted' and task.get('acceptedFromRemoved') and game.get('status') == 'pending'
+                    if task['status'] not in ('delivering', 'accepted') or not fresh(task['cafeId']) or not (can_download(task['cafeId'], task['gameId']) or previously_authorized):
                         raise ApiError('任务状态或库存变化，停止下发', 409)
+                    if task['status'] == 'delivering':
+                        task['acceptedFromRemoved'] = game.get('status') == 'pending'
                 if task['status'] in ('completed', 'removed') or task['status'] == status:
                     self.send_json(task)
                     return

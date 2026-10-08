@@ -127,6 +127,11 @@ class ControlTests(unittest.TestCase):
         self.call('/api/tasks/' + task['id'] + '/telemetry', 'POST', missing, token=cafe['agentToken'])
         claimed = self.call('/api/tasks/next/' + cafe['id'], token=cafe['agentToken'])
         self.assertEqual(claimed['id'], replacement['id'])
+        endpoint = '/api/tasks/' + replacement['id'] + '/status'
+        self.call(endpoint, 'POST', {'status': 'accepted'}, token=cafe['agentToken'])
+        server.tasks[task['id']]['sampledAt'] -= 9
+        accepted_retry = self.call(endpoint, 'POST', {'status': 'accepted'}, token=cafe['agentToken'])
+        self.assertEqual(accepted_retry['status'], 'accepted')
 
     def test_old_confirmation_finishes_operation_without_overwriting_current_progress(self):
         cafe, task = self.active_task()
