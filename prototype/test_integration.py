@@ -115,7 +115,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(replay['id'], task['id'])
         self.call('/api/tasks/' + task['id'] + '/status', 'POST', {'status': 'accepted'}, token=cafe['agentToken'])
         self.call('/api/tasks/' + task['id'] + '/status', 'POST', {'status': 'downloading'}, token=cafe['agentToken'])
-        self.assertEqual(self.call('/api/state')['tasks'][0]['progress'], 0)
+        self.assertIsNone(self.call('/api/state')['tasks'][0]['progress'])
         server.load_db()
         self.assertEqual(server.inventories[cafe['id']]['games'][5131]['name'], 'Roblox')
 
@@ -126,12 +126,19 @@ class IntegrationTests(unittest.TestCase):
         self.call('/api/tasks/next/' + cafe['id'], token=cafe['agentToken'])
         self.call('/api/tasks/' + task['id'] + '/status', 'POST', {'status': 'accepted'}, token=cafe['agentToken'])
         result = self.call('/api/tasks/' + task['id'] + '/telemetry', 'POST', {
-            'downloadedBytes': 2000, 'totalBytes': 5000, 'speedBytesPerSecond': 1000,
-            'sampledAt': time.time(), 'source': 'filesystem'
+            'progress': 0.4, 'remainingBytes': 3000, 'speedBytesPerSecond': 1000,
+            'sampledAt': time.time(), 'source': 'pcstory-listview', 'downloadState': 'downloading'
         }, token=cafe['agentToken'])
         self.assertEqual(result['etaSeconds'], 3)
         self.assertEqual(result['progress'], 0.4)
         self.assertEqual(self.call('/api/state')['tasks'][0]['speedBytesPerSecond'], 1000)
+        delayed = self.call('/api/tasks/' + task['id'] + '/telemetry', 'POST', {
+            'progress': 0.4, 'remainingBytes': 3000, 'speedBytesPerSecond': 1000,
+            'sampledAt': time.time() - 119, 'source': 'pcstory-listview', 'downloadState': 'downloading'
+        }, token=cafe['agentToken'])
+        self.assertFalse(delayed['progressFresh'])
+        self.assertIsNone(delayed['etaSeconds'])
+        self.assertEqual(delayed['progress'], .4)
 
     def test_task_telemetry_rejects_fake_or_stale_sample(self):
         cafe = self.provision()
@@ -144,7 +151,7 @@ class IntegrationTests(unittest.TestCase):
             'sampledAt': time.time(), 'source': 'guess'
         }, token=cafe['agentToken'], expected=400)
 
-    def test_pending_pcstory_inventory_updates_task_status_without_hiding_zero_progress(self):
+    def test_pending_inventory_does_not_invent_pause_or_zero_progress(self):
         cafe = self.provision()
         self.report(cafe)
         task = self.call('/api/tasks', 'POST', {'cafeId': cafe['id'], 'gameId': 5131}, expected=201)
@@ -157,13 +164,55 @@ class IntegrationTests(unittest.TestCase):
             'disks': [{'path': 'D:\\', 'freeBytes': 9000, 'totalBytes': 10000, 'downloadDisk': True}]
         }, token=cafe['agentToken'])
         current = self.call('/api/state')['tasks'][0]
-        self.assertEqual(current['status'], 'waiting')
-        self.assertEqual(current['progress'], 0)
+        self.assertEqual(current['status'], 'downloading')
+        self.assertIsNone(current['progress'])
         self.assertIsNone(current['etaSeconds'])
         self.call('/api/tasks/' + task['id'] + '/telemetry', 'POST', {
-            'downloadedBytes': 2000, 'totalBytes': 5000, 'speedBytesPerSecond': 1000,
-            'sampledAt': time.time() - 600, 'source': 'filesystem'
+            'progress': 0.4, 'remainingBytes': 3000, 'speedBytesPerSecond': 1000,
+            'sampledAt': time.time() - 600, 'source': 'pcstory-listview', 'downloadState': 'downloading'
         }, token=cafe['agentToken'], expected=400)
+
+    def test_native_list_sample_survives_restart_and_inventory_then_pauses(self):
+        cafe = self.provision()
+        self.report(cafe)
+        task = self.call('/api/tasks', 'POST', {'cafeId': cafe['id'], 'gameId': 5131}, expected=201)
+        self.call('/api/tasks/next/' + cafe['id'], token=cafe['agentToken'])
+        self.call('/api/tasks/' + task['id'] + '/status', 'POST', {'status': 'accepted'}, token=cafe['agentToken'])
+        sample = {'source': 'pcstory-listview', 'downloadState': 'downloading', 'progress': 0.0297,
+                  'remainingBytes': 10000, 'speedBytesPerSecond': 1000, 'sampledAt': time.time()}
+        current = self.call('/api/tasks/' + task['id'] + '/telemetry', 'POST', sample, token=cafe['agentToken'])
+        self.assertAlmostEqual(current['progress'], 0.0297)
+        self.assertEqual(current['etaSeconds'], 10)
+        server.load_db()
+        self.assertEqual(self.call('/api/tasks/active/' + cafe['id'], token=cafe['agentToken'])['tasks'][0]['id'], task['id'])
+        self.call('/api/agents/inventory', 'POST', {'cafeId': cafe['id'], 'games': [{'gameId': 5131, 'name': 'Roblox', 'status': 'pending'}]}, token=cafe['agentToken'])
+        self.assertEqual(self.call('/api/state')['tasks'][0]['downloadState'], 'downloading')
+        sample.update(downloadState='paused', sampledAt=time.time())
+        self.call('/api/tasks/' + task['id'] + '/telemetry', 'POST', sample, token=cafe['agentToken'])
+        current = self.call('/api/state')['tasks'][0]
+        self.assertEqual(current['downloadState'], 'paused')
+        self.assertIsNone(current['etaSeconds'])
+        self.assertAlmostEqual(current['progress'], 0.0297)
+        server.tasks[task['id']]['telemetryUpdatedAt'] -= 60
+        self.assertFalse(self.call('/api/state')['tasks'][0]['progressFresh'])
+
+    def test_native_sample_is_bound_to_cafe_and_rejects_invalid_values(self):
+        cafe = self.provision()
+        self.report(cafe)
+        task = self.call('/api/tasks', 'POST', {'cafeId': cafe['id'], 'gameId': 5131}, expected=201)
+        self.call('/api/tasks/next/' + cafe['id'], token=cafe['agentToken'])
+        self.call('/api/tasks/' + task['id'] + '/status', 'POST', {'status': 'accepted'}, token=cafe['agentToken'])
+        other = self.provision('第二家网吧')
+        sample = {'source': 'pcstory-listview', 'downloadState': 'downloading', 'progress': 0.5,
+                  'remainingBytes': 10000, 'speedBytesPerSecond': 1000, 'sampledAt': time.time()}
+        self.call('/api/tasks/' + task['id'] + '/telemetry', 'POST', sample, token=other['agentToken'], expected=403)
+        for field, value in [('progress', 1.1), ('sampledAt', float('nan')), ('speedBytesPerSecond', float('inf')), ('remainingBytes', -1)]:
+            invalid = dict(sample)
+            invalid[field] = value
+            self.call('/api/tasks/' + task['id'] + '/telemetry', 'POST', invalid, token=cafe['agentToken'], expected=400)
+        sample.update(progress=1)
+        self.call('/api/tasks/' + task['id'] + '/telemetry', 'POST', sample, token=cafe['agentToken'])
+        self.assertNotEqual(self.call('/api/state')['tasks'][0]['status'], 'completed')
 
     def test_unknown_and_stale_inventory_cannot_start_download(self):
         cafe = self.provision()

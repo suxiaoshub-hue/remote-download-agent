@@ -22,6 +22,39 @@ ONLINE_SECONDS = 75
 GAME_STATUSES = {'installed', 'not_installed', 'missing', 'pending', 'unknown'}
 
 
+def public_task(task):
+    result = dict(task)
+    result['progressFresh'] = bool(task.get('telemetrySource') == 'pcstory-listview' and online(cafes[task['cafeId']]) and
+                                  time.time() - (task.get('telemetryUpdatedAt') or 0) < 20 and
+                                  0 <= time.time() - (task.get('sampledAt') or 0) < 20)
+    if not result['progressFresh']:
+        result['etaSeconds'] = None
+    return result
+
+
+def clean_progress(data):
+    if data.get('source') != 'pcstory-listview':
+        raise ValueError('仅接受 PCStory 下载列表采样')
+    state = data.get('downloadState')
+    if state not in ('downloading', 'paused', 'waiting', 'checking', 'completed', 'failed', 'unknown'):
+        raise ValueError('下载状态不合法')
+    fields = {}
+    for name, maximum in (('progress', 1), ('remainingBytes', 2**63 - 1), ('speedBytesPerSecond', 2**63 - 1)):
+        value = data.get(name)
+        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= maximum):
+            raise ValueError('进度字段不合法：' + name)
+        fields[name] = value
+    sampled_at = data.get('sampledAt')
+    if isinstance(sampled_at, bool) or not isinstance(sampled_at, (int, float)) or not math.isfinite(sampled_at) or abs(time.time() - sampled_at) > 120:
+        raise ValueError('进度样本时间不合法或已过期')
+    remaining, speed = fields['remainingBytes'], fields['speedBytesPerSecond']
+    estimate = remaining / speed if state == 'downloading' and remaining is not None and remaining > 0 and speed is not None and speed > 0 else None
+    eta = math.ceil(estimate) if estimate is not None and math.isfinite(estimate) else None
+    fields.update(downloadState=state, etaSeconds=eta, telemetryUpdatedAt=time.time(), sampledAt=sampled_at,
+                  telemetrySource='pcstory-listview')
+    return fields
+
+
 def token_hash(token):
     return hashlib.sha256(token.encode('utf-8')).hexdigest()
 
@@ -66,7 +99,9 @@ def inventory_view(cafe_id, query=''):
     games.update(current['games'])
     for task in tasks.values():
         if task['cafeId'] == cafe_id and task['gameId'] in games and task['status'] in ('queued', 'delivering', 'accepted', 'waiting', 'downloading'):
-            games[task['gameId']] = dict(games[task['gameId']], status='downloading' if task['status'] == 'downloading' else 'pending')
+            observed = public_task(task)
+            state = task.get('downloadState') if observed['progressFresh'] else None
+            games[task['gameId']] = dict(games[task['gameId']], status=state if state in ('downloading', 'paused', 'checking', 'waiting') else 'pending')
     query = query.casefold().strip()
     selected = [game for game in games.values() if not query or query in str(game['gameId']) or query in game['name'].casefold()]
     return {'cafeId': cafe_id, 'reported': cafe_id in inventories, 'fresh': fresh(cafe_id),
@@ -167,16 +202,20 @@ class Handler(BaseHTTPRequestHandler):
                             continue
                         if game.get('status') == 'installed':
                             task.update(status='completed', updatedAt=time.time())
-                        elif game.get('status') == 'pending':
-                            task.update(status='waiting', progress=task.get('progress', 0) if task.get('progress') is not None else 0,
-                                        etaSeconds=None, updatedAt=time.time())
                 elif action == 'error':
                     cafe['error'] = str(data.get('error', ''))[:1000]
+                elif action == 'progress-error':
+                    cafe['progressError'] = str(data.get('error', ''))[:1000]
                 elif action not in ('register', 'heartbeat'):
                     raise ApiError('接口不存在', 404)
                 if action != 'heartbeat':
                     save_db()
                 self.send_json({'ok': True, 'cafeId': cafe_id})
+                return
+            if parts[:3] == ['api', 'tasks', 'active'] and method == 'GET' and len(parts) == 4:
+                cafe_id = parts[-1]
+                self.authorize(cafe_id)
+                self.send_json({'tasks': [dict(task) for task in tasks.values() if task['cafeId'] == cafe_id and task['status'] in ('accepted', 'waiting', 'downloading', 'uncertain')]})
                 return
             if parts[:3] == ['api', 'tasks', 'next'] and method == 'GET' and len(parts) == 4:
                 cafe_id = parts[-1]
@@ -218,7 +257,7 @@ class Handler(BaseHTTPRequestHandler):
                     local_game = inventories.get(task['cafeId'], {}).get('games', {}).get(task['gameId'], {})
                     if local_game.get('status') != 'installed' or not fresh(task['cafeId']):
                         raise ApiError('尚无新的本地已下载记录', 409)
-                task.update(status=status, updatedAt=time.time(), progress=task.get('progress', 0))
+                task.update(status=status, updatedAt=time.time())
                 save_db()
                 self.send_json(task)
                 return
@@ -229,36 +268,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.authorize(task['cafeId'])
                 if task['status'] not in ('accepted', 'waiting', 'downloading', 'uncertain'):
                     raise ApiError('任务当前不接受进度上报', 409)
-                try:
-                    downloaded = int(data['downloadedBytes'])
-                    total = int(data['totalBytes'])
-                    speed = float(data['speedBytesPerSecond'])
-                    sampled_at = float(data['sampledAt'])
-                except (KeyError, TypeError, ValueError, OverflowError) as error:
-                    raise ApiError('进度样本字段不合法') from error
-                source = str(data.get('source', ''))
-                now = time.time()
-                if source not in ('filesystem', 'pcstory-log'):
-                    raise ApiError('进度样本来源未经验证')
-                if total <= 0 or downloaded < 0 or downloaded > total or speed < 0 or not math.isfinite(speed):
-                    raise ApiError('进度样本数值不合法')
-                if abs(now - sampled_at) > 120:
-                    raise ApiError('进度样本已过期')
-                expected_total = int(task.get('totalBytes', 0) or 0)
-                if expected_total and total != expected_total:
-                    raise ApiError('进度总量与库存记录不一致')
-                remaining = total - downloaded
-                eta = math.ceil(remaining / speed) if speed > 0 and remaining > 0 else None
-                task.update(downloadedBytes=downloaded, totalBytes=total,
-                            progress=downloaded / total, speedBytesPerSecond=speed,
-                            etaSeconds=eta, telemetryUpdatedAt=sampled_at,
-                            telemetrySource=source, updatedAt=now)
+                task.update(clean_progress(data), updatedAt=time.time())
+                cafes[task['cafeId']]['progressError'] = ''
                 save_db()
-                self.send_json(task)
+                self.send_json(public_task(task))
                 return
             self.authorize()
             if parsed.path == '/api/state' and method == 'GET':
-                self.send_json({'cafes': [public_cafe(cafe) for cafe in cafes.values()], 'tasks': list(tasks.values())})
+                self.send_json({'cafes': [public_cafe(cafe) for cafe in cafes.values()], 'tasks': [public_task(task) for task in tasks.values()]})
             elif parsed.path == '/api/cafes' and method == 'POST':
                 name = str(data['name']).strip()[:100]
                 if not name:
@@ -304,10 +321,10 @@ class Handler(BaseHTTPRequestHandler):
                 if game['sizeBytes'] and max(disk['freeBytes'] for disk in disks) < game['sizeBytes']:
                     raise ApiError('PCStory 下载盘剩余容量不足', 409)
                 task = {'id': uuid.uuid4().hex, 'cafeId': cafe_id, 'gameId': game_id, 'name': game['name'],
-                        'status': 'queued', 'progress': 0, 'downloadedBytes': None,
+                        'status': 'queued', 'progress': None, 'downloadedBytes': None,
                         'totalBytes': int(game.get('sizeBytes', 0) or 0),
                         'speedBytesPerSecond': None, 'etaSeconds': None,
-                        'telemetryUpdatedAt': None, 'telemetrySource': None,
+                        'telemetryUpdatedAt': 0, 'telemetrySource': None,
                         'updatedAt': time.time()}
                 tasks[task['id']] = task
                 save_db()

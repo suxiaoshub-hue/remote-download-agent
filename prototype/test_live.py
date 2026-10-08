@@ -66,20 +66,5 @@ class LiveTests(unittest.TestCase):
         self.assertEqual(adapter.result_status(3), 'failed')
         self.assertEqual(adapter.result_status(5), 'uncertain')
 
-    def test_filesystem_sample_uses_only_an_existing_path(self):
-        from agent import filesystem_bytes
-        with tempfile.TemporaryDirectory() as folder:
-            with open(os.path.join(folder, 'part.bin'), 'wb') as file:
-                file.write(b'x' * 17)
-            self.assertEqual(filesystem_bytes(folder), 17)
-            self.assertEqual(filesystem_bytes(os.path.join(folder, 'missing')), None)
-
-    def test_telemetry_binds_download_path_after_inventory_refresh(self):
-        from agent import bind_telemetry_path
-        telemetry = {'task': {'gameId': 5131}, 'path': '', 'baseline': None}
-        bound = bind_telemetry_path(telemetry, {'games': [{'gameId': 5131, 'localPath': 'D:\\Roblox'}]})
-        self.assertEqual(bound['path'], 'D:\\Roblox')
-
-
 if __name__ == '__main__':
     unittest.main()
