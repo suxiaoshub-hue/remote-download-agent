@@ -122,7 +122,7 @@ class WindowsListReader:
         safe_to_free = True
         deadline = time.monotonic() + 4
 
-        def send(target, message, first=0, second=0, timeout=200):
+        def send(target, message, first=0, second=0, timeout=1000):
             nonlocal safe_to_free
             if time.monotonic() > deadline:
                 raise ValueError('PCStory 列表较大，本轮采样超时')
@@ -133,8 +133,8 @@ class WindowsListReader:
             result = ctypes.c_size_t()
             if not self.user.SendMessageTimeoutW(target, message, first, second, 0x1 | 0x2 | 0x20, timeout, ctypes.byref(result)):
                 safe_to_free = False
-                self.blocked_until = time.monotonic() + 300
-                raise ValueError('PCStory 控件响应超时，已停止采样并保留临时参数')
+                self.blocked_until = time.monotonic() + 2
+                raise ValueError('PCStory 控件响应超时，稍后核对本地状态，已保留临时参数')
             return result.value
 
         def text(target, message, item, structure):
@@ -271,8 +271,8 @@ class WindowsListReader:
                     selected_row = send(listing, 0x100c, -1, 2)
                     if selected_row >= row_count or cell(selected_row, id_column).strip() != target_id or send(listing, 0x100c, selected_row, 2) != ctypes.c_size_t(-1).value:
                         raise ValueError('唯一选中 GID 校验失败，未发送操作')
-                    deadline = time.monotonic() + 6
-                    send(parent, 0x111, {'pause': 0x8016, 'resume': 0x8017, 'remove': 0x8018}[action], timeout=5000)
+                    deadline = time.monotonic() + 31
+                    send(parent, 0x111, {'pause': 0x8016, 'resume': 0x8017, 'remove': 0x8018}[action], timeout=30000)
                 finally:
                     if safe_to_free:
                         deadline = time.monotonic() + 2

@@ -34,7 +34,7 @@ docker compose up -d --build
 docker compose exec server cat /data/server-config.json
 ```
 
-Caddy 自动申请 HTTPS 证书；浏览器打开 https://你的域名，使用 adminToken 登录。添加网吧时填写相同 HTTPS 地址。各网吧只部署 Agent.exe、PcstoryAdapter.exe、pcstory-adapter.ini、Start-Agent.cmd 和网页生成的 agent-config.json。完整服务端源码无需第三方 Python 库，可自行通过 systemd 与 HTTPS 反向代理运行。
+Caddy 自动申请 HTTPS 证书；浏览器打开 https://你的域名，使用 adminToken 登录。添加网吧时填写相同 HTTPS 地址。各网吧只部署 Agent.exe、PcstoryAdapter.exe、pcstory-adapter.ini、Start-Agent.cmd 和网页生成的 agent-config.json。通过源码运行服务端时先执行 `python -m pip install -r prototype/requirements-server.txt`，可自行通过 systemd 与 HTTPS 反向代理运行；Docker 和 Windows EXE 已包含拼音依赖。
 
 备份 Docker server-data 卷中的 server-config.json 和 remote_download.db。启动命令以同一个持久化数据目录运行；不要将凭证或数据库加入 Git。
 
@@ -50,12 +50,16 @@ Caddy 自动申请 HTTPS 证书；浏览器打开 https://你的域名，使用 
 
 控制日志 agent-control.json 持久化 prepared/executing/result；中断后 executing 只上报结果不确定，不自动重复发送。操作失败或待确认可查看当前本地状态再发起新操作；结果显示为 confirmed 才表示读取了预期状态。磁盘检查不预留其他并发任务的空间，PCStory 最终处理容量和它自己的保留空间设置。
 
+下载器忙碌时，菜单命令最多等待 30 秒，随后最多 20 秒核对实际状态；命令超时和暂时读取错误仍会尝试确认，不自动重发菜单。采样超时后的短暂恢复等待为 2 秒。同一网吧同一 GID 的下载记录在网页合并为最新一条，原始任务与控制历史继续保存在数据库中，旧进度更新不会把旧记录再次显示出来。
+
+游戏搜索支持中文、英文、GID、拼音首字母和全拼。例如 `hs`、`hsjj`、`hongse`、`红色` 都能找到“红色警戒”。拼音使用词组默认读音；名称或 GID 的原始匹配不变，不区分英文大小写。
+
 当前是单服务进程版本；库存或连接超过有效期停止下发。已完成本地测试和 GitHub 构建验证后仍需测试机验证自动读取与网页下载整个流程。Python 3.8 构建兼容旧系统，但旧 Windows 的完整运行兼容性以实际测试为准。
 
 ## 开发验证
 
 ```sh
-python -m pip install cryptography==42.0.8
+python -m pip install cryptography==42.0.8 -r prototype/requirements-server.txt
 python -m unittest discover -s prototype -p 'test*.py'
 ```
 

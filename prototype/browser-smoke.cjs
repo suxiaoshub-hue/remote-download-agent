@@ -40,7 +40,7 @@ let browser;
     return response.json();
   }
   await api('/api/agents/register',{cafeId:config.cafeId});
-  await api('/api/agents/inventory',{cafeId:config.cafeId,complete:true,games:[{gameId:5131,name:'Roblox',status:'not_installed',sizeBytes:1048576},{gameId:8044,name:'CSGO',status:'installed',localPath:'F:\\CSGO'}],disks:[{path:'F:\\',totalBytes:214748364800,freeBytes:107374182400,downloadDisk:true}]});
+  await api('/api/agents/inventory',{cafeId:config.cafeId,complete:true,games:[{gameId:5131,name:'Roblox',status:'not_installed',sizeBytes:1048576},{gameId:8044,name:'CSGO',status:'installed',localPath:'F:\\CSGO'},{gameId:100,name:'红色警戒2',status:'not_installed'}],disks:[{path:'F:\\',totalBytes:214748364800,freeBytes:107374182400,downloadDisk:true}]});
   await page.locator('#back').click();
   await page.locator('#refresh').click();
   await page.waitForFunction(()=>document.querySelector('#cafes').textContent.includes('在线'));
@@ -52,6 +52,13 @@ let browser;
   await page.locator('.game-row').filter({hasText:'Roblox'}).waitFor();
   if(await page.locator('.game-row').count()!==1)throw new Error('Search returns unrelated games');
   if(!queries.every(url=>url.includes('query=Rob')))throw new Error('Unfiltered inventory query');
+  await page.locator('#game-search').fill('hs');
+  await page.locator('.game-row').filter({hasText:'红色警戒2'}).waitFor();
+  if(await page.locator('.game-row').count()!==1)throw new Error('Pinyin initials return unrelated games');
+  await page.locator('#game-search').fill('hongse');
+  await page.waitForFunction(()=>detailView&&detailView.games.length===1&&detailView.games[0].gameId===100);
+  await page.locator('#game-search').fill('Rob');
+  await page.locator('.game-row').filter({hasText:'Roblox'}).waitFor();
 
   await page.evaluate(()=>{
     window.resultDisappearances=0;
@@ -145,6 +152,8 @@ let browser;
   await page.getByRole('button',{name:'重新下载',exact:true}).click();
   const afterRemove=(await api('/api/state',null,'browser-test-secret-long')).tasks;
   if(!afterRemove.some(item=>item.status==='queued'&&item.id!==replacement.id))throw new Error('Delete did not unlock new download');
+  if(afterRemove.length!==1)throw new Error('Deleted and replacement tasks appear as duplicate rows');
+  await page.waitForFunction(()=>document.querySelectorAll('#tasks .task-row').length===1&&document.querySelector('#tasks').textContent.includes('等待下发'));
   page.once('dialog',dialog=>dialog.accept('更名后的网吧'));
   await page.locator('#rename').click();
   await page.waitForFunction(()=>document.querySelector('#detail-name').textContent==='更名后的网吧');

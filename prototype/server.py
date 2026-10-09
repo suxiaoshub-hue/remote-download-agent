@@ -9,7 +9,9 @@ import sys
 import threading
 import time
 import uuid
+from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pypinyin import Style, lazy_pinyin
 from urllib.parse import parse_qs, unquote, urlparse
 from runtime import configure_console
 
@@ -42,6 +44,28 @@ def public_task(task):
     related = [command for command in controls.values() if command['taskId'] == task['id']]
     result['control'] = max(related, key=lambda command: command['createdAt']) if related else None
     return result
+
+
+def visible_tasks():
+    latest = {}
+    for task in tasks.values():
+        latest[(task['cafeId'], task['gameId'])] = task
+    return [public_task(task) for task in latest.values() if not task.get('hidden')]
+
+
+@lru_cache(maxsize=20000)
+def pinyin_keys(name):
+    return tuple(''.join(''.join(lazy_pinyin(name, style=style)).casefold().split())
+                 for style in (Style.NORMAL, Style.FIRST_LETTER))
+
+
+def matches_game(game, query):
+    if not query or query in str(game['gameId']) or query in game['name'].casefold():
+        return True
+    compact = ''.join(query.split())
+    if not compact.isascii() or not compact.isalnum() or not any('\u3400' <= character <= '\u9fff' for character in game['name']):
+        return False
+    return any(compact in key for key in pinyin_keys(game['name']))
 
 
 def clean_progress(data, historical=False):
@@ -158,7 +182,7 @@ def inventory_view(cafe_id, query=''):
             if not any(other['cafeId'] == cafe_id and other['gameId'] == task['gameId'] and other['status'] in ('queued', 'delivering') + ACTIVE_STATUSES for other in tasks.values()):
                 games[task['gameId']]['status'] = 'not_installed'
     query = query.casefold().strip()
-    selected = [game for game in games.values() if not query or query in str(game['gameId']) or query in game['name'].casefold()]
+    selected = [game for game in games.values() if matches_game(game, query)]
     return {'cafeId': cafe_id, 'reported': cafe_id in inventories, 'fresh': fresh(cafe_id),
             'updatedAt': current['updatedAt'], 'complete': current['complete'],
             'games': sorted(selected, key=lambda game: (game['name'], game['gameId'])), 'disks': current['disks']}
@@ -394,7 +418,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.authorize()
             if parsed.path == '/api/state' and method == 'GET':
-                self.send_json({'cafes': [public_cafe(cafe) for cafe in cafes.values()], 'tasks': [public_task(task) for task in tasks.values() if not task.get('hidden')]})
+                self.send_json({'cafes': [public_cafe(cafe) for cafe in cafes.values()], 'tasks': visible_tasks()})
             elif parsed.path == '/api/cafes' and method == 'POST':
                 name = str(data['name']).strip()[:100]
                 if not name:

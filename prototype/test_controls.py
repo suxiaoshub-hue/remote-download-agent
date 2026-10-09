@@ -10,6 +10,26 @@ class ControlTests(unittest.TestCase):
     call = test_integration.IntegrationTests.call
     provision = test_integration.IntegrationTests.provision
     report = test_integration.IntegrationTests.report
+
+    def test_restarted_game_displays_only_newest_task_despite_old_telemetry(self):
+        cafe, task = self.active_task()
+        import server
+        server.tasks[task['id']]['status'] = 'removed'
+        self.report(cafe)
+        replacement = self.call('/api/tasks', 'POST', {'cafeId': cafe['id'], 'gameId': 5131}, expected=201)
+        server.tasks[task['id']]['updatedAt'] = time.time() + 60
+        visible = self.call('/api/state')['tasks']
+        self.assertEqual([item['id'] for item in visible], [replacement['id']])
+        server.load_db()
+        self.assertEqual([item['id'] for item in self.call('/api/state')['tasks']], [replacement['id']])
+        self.assertIn(task['id'], server.tasks)
+
+    def test_task_display_does_not_merge_different_cafes(self):
+        first, task = self.active_task()
+        second = self.provision('第二家网吧')
+        self.report(second)
+        other = self.call('/api/tasks', 'POST', {'cafeId': second['id'], 'gameId': 5131}, expected=201)
+        self.assertEqual({item['id'] for item in self.call('/api/state')['tasks']}, {task['id'], other['id']})
     def active_task(self):
         cafe = self.provision()
         self.report(cafe)

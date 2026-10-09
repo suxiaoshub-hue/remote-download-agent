@@ -8,6 +8,8 @@ Agent：POST /api/agents/register、heartbeat、inventory、error、progress-err
 
 下载进度：独立线程每 1 秒读取 PCStory 标准下载列表，按列标题与 GID 匹配，不点击或切换页面。POST /api/tasks/{id}/telemetry 字段为 progress（0～1 或 null）、downloadState、remainingBytes、updateBytes、speedBytesPerSecond、sampledAt、source（固定 pcstory-listview）、listFields（title/value 数组，最多 24 列）。downloadState 为 downloading/paused/waiting/checking/completed/failed/unknown/absent。服务端校验任务所属网吧、数值范围和样本时间；只在正在下载且剩余量与速度均大于零时按 remainingBytes/speedBytesPerSecond 计算 ETA。暂停保留列表实际百分比，未知字段保留 null。清单状态 pending 不推断实时暂停或下载状态。
 
+游戏 inventory 的 query 增加中文名称拼音首字母和全拼匹配，保留原有名称与 GID 子串匹配。GET /api/state 的 tasks 每个 cafeId/gameId 只返回最新创建的任务；数据库、Agent 活动任务与控制结果接口仍保留旧任务用于确认和历史恢复。
+
 GET /api/state 的 progressFresh 要求来源有效、Agent 在线、采样和上报均不超过 8 秒。旧样本保留百分比并标注上次读取，ETA 与当前速度隐藏，displayState 为 unknown。PCStory 实际列表原始标题、目标行与采集错误写入 Agent 同目录 pcstory-progress.json；读取失败单独上报 progressError，不阻塞心跳或清单。Agent 重启根据 active 重新采样已有任务。有效控件连续三次、至少两秒缺失后状态为 removed，解除重复 GID 锁；新增未观察到的任务有 15 秒启动宽限。
 
 管理员 POST /api/tasks/{id}/control（action=pause/resume/remove），要求在线且新鲜的实际状态，重复执行中操作返回 409。Agent GET /api/controls/next/{cafeId}、POST /api/controls/{id}/status（accepted/confirmed/failed/uncertain），凭证绑定店铺；confirmed 必须携带匹配操作的真实 sample。操作队列持久化；Agent 本地 agent-control.json 防止重启重复执行。原生列表按 GID 唯一选中发送 WM_COMMAND 0x8016/0x8017/0x8018，再读状态确认。POST /api/tasks/{id}/dismiss 仅隐藏终态网页记录；POST cancel 只取消 queued。

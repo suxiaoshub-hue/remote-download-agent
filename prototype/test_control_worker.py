@@ -14,6 +14,31 @@ class WorkerTests(unittest.TestCase):
     def command(self):
         return {'id': 'control-id', 'cafeId': 'cafe', 'gameId': 5131, 'action': 'pause'}
 
+    def test_command_timeout_still_checks_actual_pause_without_resending(self):
+        reader = Mock()
+        sample = {'gameId': 5131, 'downloadState': 'paused', 'sampledAt': time.time()}
+        reader.read.side_effect = [
+            {'samples': [dict(sample, downloadState='downloading')]},
+            ValueError('PCStory 控件响应超时'),
+            ValueError('PCStory 仍忙碌'),
+            {'samples': [sample]},
+        ]
+        worker = ControlWorker(Mock(), 'cafe', reader=reader)
+        worker.stopped.wait = Mock()
+        result = worker.execute(self.command())
+        self.assertEqual(result['status'], 'confirmed')
+        self.assertEqual(result['sample'], sample)
+        self.assertEqual(sum(call.kwargs.get('action') == 'pause' for call in reader.read.call_args_list), 1)
+
+    def test_temporary_read_failure_during_confirmation_recovers(self):
+        reader = Mock()
+        sample = {'gameId': 5131, 'downloadState': 'paused', 'sampledAt': time.time()}
+        reader.read.side_effect = [{'samples': [dict(sample, downloadState='downloading')]}, {},
+                                   ValueError('列表正在更新'), {'samples': [sample]}]
+        worker = ControlWorker(Mock(), 'cafe', reader=reader)
+        worker.stopped.wait = Mock()
+        self.assertEqual(worker.execute(self.command())['status'], 'confirmed')
+
     def test_restart_marks_executing_uncertain_without_resending(self):
         with tempfile.TemporaryDirectory() as folder:
             path = os.path.join(folder, 'agent-control.json')

@@ -19,7 +19,7 @@ def main():
     case.setUp()
     with tempfile.TemporaryDirectory() as folder:
         ready = Path(folder) / 'ready.txt'
-        fixture = subprocess.Popen([str(executable), str(ready)])
+        fixture = subprocess.Popen([str(executable), str(ready), '6000'])
         try:
             deadline = time.monotonic() + 10
             while not ready.exists():
@@ -58,7 +58,8 @@ def main():
             case.report(cafe)
             replacement = case.call('/api/tasks', 'POST', {'cafeId': cafe['id'], 'gameId': 5131}, expected=201)
             assert replacement['id'] != task['id']
-            print('PASS native GID pause/resume/remove -> durable control worker -> authenticated server; unrelated selected GID unchanged; deletion unlocks new download')
+            assert [item['id'] for item in case.call('/api/state')['tasks']] == [replacement['id']]
+            print('PASS 6-second native pause/resume/remove -> durable control worker -> authenticated server; unrelated selected GID unchanged; deletion and redownload display one task')
         finally:
             fixture.terminate()
             fixture.wait(timeout=10)

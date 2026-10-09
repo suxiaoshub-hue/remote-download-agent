@@ -51,18 +51,22 @@ class ControlWorker:
             return {'status': 'failed', 'error': '本地任务状态变化，未发送操作'}
         try:
             self.reader.read([game_id], action=action)
-            deadline = time.monotonic() + 8
-            while time.monotonic() < deadline and not self.stopped.is_set():
+            last_error = ''
+        except Exception as error:
+            last_error = str(error)
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline and not self.stopped.is_set():
+            try:
                 result = self.reader.read([game_id])
                 sample = next((item for item in result['samples'] if item['gameId'] == game_id), None)
                 if sample and sample['downloadState'] in expected:
                     return {'status': 'confirmed', 'sample': sample}
                 if action == 'remove' and game_id in result.get('absentGameIds', []):
                     return {'status': 'confirmed', 'sample': {'gameId': game_id, 'downloadState': 'removed', 'source': 'pcstory-listview', 'sampledAt': time.time()}}
-                self.stopped.wait(.25)
-        except Exception as error:
-            return {'status': 'uncertain', 'error': str(error)}
-        return {'status': 'uncertain', 'error': '已发送操作，但尚未读取预期状态；请查看 PCStory，不自动重发'}
+            except Exception as error:
+                last_error = str(error)
+            self.stopped.wait(.5)
+        return {'status': 'uncertain', 'error': '操作结果尚未确认；等待本地状态更新，不自动重发' + ('：' + last_error if last_error else '')}
 
     def poll(self):
         if self.record is None:

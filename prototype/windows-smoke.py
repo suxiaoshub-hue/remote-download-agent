@@ -47,6 +47,12 @@ def main():
                 assert '网吧远程下载'.encode() in response.read(), 'Packaged webpage missing'
             created = request('/api/cafes', {'name': '打包测试', 'server': base})
             config = created['config']
+            agent_req = urllib.request.Request(base + '/api/agents/inventory',
+                data=json.dumps({'cafeId': created['id'], 'games': [{'gameId': 100, 'name': '红色警戒2', 'status': 'not_installed'}]}).encode(),
+                headers={'Authorization': 'Bearer ' + created['agentToken'], 'Content-Type': 'application/json'})
+            with urllib.request.urlopen(agent_req, timeout=2) as response:
+                assert response.status == 200
+            assert request('/api/cafes/' + created['id'] + '/inventory?query=hs')['games'][0]['name'] == '红色警戒2', 'Frozen pinyin dependency missing'
             config['pcstoryFolder'] = str(folder / 'no-pcstory')
             (folder / 'agent-config.json').write_text(json.dumps(config), encoding='utf-8')
             agent = subprocess.Popen([str(folder / 'Agent.exe')], cwd=folder, creationflags=subprocess.CREATE_NEW_CONSOLE)

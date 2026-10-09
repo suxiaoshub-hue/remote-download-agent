@@ -16,7 +16,7 @@ jobs:
           python-version: '3.12'
       - name: Test API and Agent logic on Linux
         run: |
-          python -m pip install cryptography==42.0.8
+          python -m pip install cryptography==42.0.8 -r prototype/requirements-server.txt
           python -m unittest discover -s prototype -p 'test*.py'
       - name: Validate deployment and build container
         run: |
@@ -33,7 +33,7 @@ jobs:
       - name: Start container and verify persistence
         run: python deploy/test-container.py
       - name: Package Linux server
-        run: zip -r remote-download-server-linux.zip prototype/server.py prototype/runtime.py prototype/web.html deploy prototype/README.md
+        run: zip -r remote-download-server-linux.zip prototype/server.py prototype/runtime.py prototype/web.html prototype/requirements-server.txt deploy prototype/README.md
       - uses: actions/upload-artifact@v4
         with:
           name: remote-download-server-linux

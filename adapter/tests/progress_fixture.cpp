@@ -5,6 +5,7 @@
 #include <string>
 
 static HWND downloadList = nullptr;
+static DWORD pauseDelay = 0;
 
 void SetCell(int row, int column, const wchar_t* value) {
     LVITEMW item{};
@@ -24,7 +25,10 @@ INT_PTR CALLBACK WindowProc(HWND window, UINT message, WPARAM first, LPARAM seco
         item.cchTextMax = 32;
         SendMessageW(downloadList, LVM_GETITEMTEXTW, selected, reinterpret_cast<LPARAM>(&item));
         if (std::wstring(identity) != L"5131") return FALSE;
-        if (first == 0x8016) SetCell(selected, 3, L"暂停下载");
+        if (first == 0x8016) {
+            Sleep(pauseDelay);
+            SetCell(selected, 3, L"暂停下载");
+        }
         else if (first == 0x8017) SetCell(selected, 3, L"正在下载");
         else if (first == 0x8018) SendMessageW(downloadList, LVM_DELETEITEM, selected, 0);
         else return FALSE;
@@ -46,7 +50,8 @@ INT_PTR CALLBACK WindowProc(HWND window, UINT message, WPARAM first, LPARAM seco
 }
 
 int wmain(int argc, wchar_t** argv) {
-    if (argc != 2) return 1;
+    if (argc != 2 && argc != 3) return 1;
+    if (argc == 3) pauseDelay = static_cast<DWORD>(std::stoul(argv[2]));
     INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_LISTVIEW_CLASSES};
     if (!InitCommonControlsEx(&controls)) return 2;
     alignas(DWORD) unsigned char templateBytes[64]{};
